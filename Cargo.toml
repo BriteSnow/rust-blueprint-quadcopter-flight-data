@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/lib-common", "crates/mocker", "crates/simrec"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+# -- Internal
+lib-common = { path = "crates/lib-common" }
+# -- Async / Event
+crossfire = "3.1.12"
+tokio = { version = "1", features = ["full"] }
+# -- Serde / Format
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# -- CLI
+clap = { version = "4", features = ["derive"] }
+# -- Others
+simple-fs = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rand = "0.8"
+rand_chacha = "0.3"
+derive_more = { version = "2", features = ["from", "display"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+# unused = { level = "allow", priority = -1 } # For exploratory dev.
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

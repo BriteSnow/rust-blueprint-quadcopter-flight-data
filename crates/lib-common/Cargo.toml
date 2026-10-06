@@ -1,0 +1,17 @@
+[package]
+name = "lib-common"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# -- Async / Event
+crossfire.workspace = true
+# -- Others
+derive_more.workspace = true

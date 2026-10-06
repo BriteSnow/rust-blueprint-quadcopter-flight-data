@@ -110,3 +110,6 @@ cdk.out/
 
 # Allow vscode
 # !.vscode # Commented by default
+
+data/
+.out/

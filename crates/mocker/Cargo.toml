@@ -1,0 +1,16 @@
+[package]
+name = "mocker"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# -- Serde / Format
+serde.workspace = true
+serde_json.workspace = true
+# -- CLI
+clap.workspace = true
+# -- Others
+simple-fs.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true

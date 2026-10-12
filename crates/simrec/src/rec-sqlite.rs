@@ -8,7 +8,7 @@ use crate::{
     Error, Result,
 };
 
-const DATABASE_FILENAME: &str = "capture.db";
+const DATABASE_FILENAME: &str = "capture.sqlite";
 const INSERT_SQL: &str = "INSERT INTO samples (ts_ns, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 pub struct SqliteRecorder {

@@ -82,7 +82,7 @@ Options:
 
 ## Output
 
-- Recordings go to `<out>/<backend>/`, such as `.out/sqlite/capture.db` or `.out/raw/seg-000000.bin`.
+- Recordings go to `<out>/<backend>/`, such as `.out/sqlite/capture.sqlite` or `.out/raw/seg-000000.bin`.
 
 - `metrics.json` is published only after successful replay and tick conservation.
 

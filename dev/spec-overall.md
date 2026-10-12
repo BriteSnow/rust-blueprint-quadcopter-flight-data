@@ -128,7 +128,7 @@ dev/                    project rules and specs
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `.out/sqlite/capture.sqlite`, WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- SQLite: `.out/sqlite/capture.sqlite`, WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z`. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
 - Raw: `.out/raw/seg-000000.bin` and so on. Each record is 28 bytes: `i64` timestamp followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling

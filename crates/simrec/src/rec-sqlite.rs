@@ -52,7 +52,8 @@ impl SqliteRecorder {
                 rotor_rl REAL,
                 rotor_rr REAL,
                 accel_z REAL
-            );",
+            );
+            CREATE INDEX idx_samples_accel_z ON samples (accel_z);",
         )?;
 
         Ok(Self {

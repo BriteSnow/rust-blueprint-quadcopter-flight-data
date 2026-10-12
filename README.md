@@ -51,6 +51,7 @@ Replays a mock dataset through the capture pipeline into exactly one backend.
 ```sh
 cargo run --release -p simrec -- --noop --mock-dir data/mock/1d --speed max
 cargo run --release -p simrec -- --sql --mock-dir data/mock/1d --speed max
+cargo run --release -p simrec -- --raw --mock-dir data/mock/1d --speed max
 cargo run --release -p simrec -- --raw --mock-dir data/mock/1d --speed realtime --out .out/realtime
 ```
 

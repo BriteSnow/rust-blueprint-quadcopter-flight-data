@@ -3,6 +3,8 @@
 .*
 !.gitignore
 
+data/
+
 # -- AIPack
 # Ignore all .aipack files
 *.aipack
@@ -111,5 +113,4 @@ cdk.out/
 # Allow vscode
 # !.vscode # Commented by default
 
-data/
 .out/

@@ -13,7 +13,7 @@ use lib_common::event_base::new_spsc_bounded;
 use simple_fs::SPath;
 
 use crate::{
-    cmd::CliCmd,
+    cmd::{duration_name, CliCmd},
     metrics::Metrics,
     mock_in::MockInput,
     rec,
@@ -37,23 +37,22 @@ pub(super) fn run() -> Result<()> {
         return Err(Error::custom("--flush-ms exceeds the monotonic clock range"));
     }
 
-    let input = MockInput::open(&args.mock_dir)?;
+    let name = duration_name(&args.duration)?;
+    let input = MockInput::open(&args.out.join("mock-data").join(&name))?;
     let expected_ticks = input.tick_count();
     if matches!(speed, ReplaySpeed::Realtime) {
         input.validate_clock_range()?;
     }
     let backend = if args.raw {
         "raw"
+    } else if args.sql && args.with_index {
+        "sqlite-with-index"
     } else if args.sql {
-        "sqlite"
+        "sqlite-no-index"
     } else {
         "noop"
     };
-    let out = if backend == "sqlite" {
-        args.out.clone()
-    } else {
-        args.out.join(backend)
-    };
+    let out = args.out.join("captured").join(&name).join(backend);
     prepare_output(&out)?;
 
     let recorder: Box<dyn Recorder> = if args.raw {
@@ -82,7 +81,7 @@ pub(super) fn run() -> Result<()> {
         produced,
         recorded,
     );
-    if backend == "sqlite" {
+    if args.sql {
         metrics.publish_as(&out, "capture-metrics.json")?;
     } else {
         metrics.publish(&out)?;

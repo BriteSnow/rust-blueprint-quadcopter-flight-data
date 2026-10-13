@@ -27,13 +27,12 @@ Five channels are sampled together at 200 Hz, one tick every 5 ms.
 ```text
 Cargo.toml              workspace, shared dependencies, lints, profiles
 README.md               usage, formats, limitations, comparison procedure
-.gitignore              data/, .out/
+.gitignore              sandbox/
 crates/
   lib-common/           shared named bounded SPSC facade (event_base)
   mocker/               deterministic mock dataset generator
   simrec/               validated replay, pipeline, recorders, metrics
-data/mock/              mocker output (not versioned)
-.out/                   simrec output (not versioned)
+sandbox/                generated mock datasets and captures (not versioned)
 dev/                    project rules and specs
 .workbench/             planning and chat workspace
 ```
@@ -57,9 +56,9 @@ dev/                    project rules and specs
 
 | Arg          | Default     | Notes                                      |
 | ------------ | ----------- | ------------------------------------------ |
-| `--duration` | `1d`        | positive integer followed by `d`, `h`, `m` |
+| `--duration` | `d1`        | `d<N>`, `h<N>`, or `m<N>`, N positive      |
 | `--seed`     | `42`        | reproducible for the same build            |
-| `--out`      | `data/mock` | must be new or empty                       |
+| `--out`      | `sandbox`   | dataset in `<out>/mock-data/<name>`        |
 | `--rate-hz`  | `200`       | only `200` is accepted                     |
 
 ### Output
@@ -92,8 +91,8 @@ dev/                    project rules and specs
 | `--noop`      | (one of)    | pipeline diagnostic, writes no recording    |
 | `--sql`       | (one of)    | SQLite WAL backend                          |
 | `--raw`       | (one of)    | hourly raw binary backend                   |
-| `--mock-dir`  | `data/mock` | input dataset directory                     |
-| `--out`       | `.out`      | backend writes to `<out>/<backend>/`        |
+| `--duration`  | `d1`        | input dataset, `d<N>`, `h<N>`, `m<N>`       |
+| `--out`       | `sandbox`   | `<out>/captured/<name>/<backend>/`          |
 | `--flush-ms`  | `10`        | positive consumer flush interval            |
 | `--speed`     | `realtime`  | `realtime` (deadline pacing) or `max`       |
 | `--ring-cap`  | `4096`      | ring capacity in messages, 1 to 65536       |
@@ -128,8 +127,8 @@ dev/                    project rules and specs
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `.out/sqlite/capture.sqlite`, WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z`. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
-- Raw: `.out/raw/seg-000000.bin` and so on. Each record is 28 bytes: `i64` timestamp followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
+- SQLite: `sandbox/captured/<name>/sqlite-no-index/capture.sqlite` or `sandbox/captured/<name>/sqlite-with-index/capture.sqlite` (the index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the with-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- Raw: `sandbox/captured/<name>/raw/seg-000000.bin` and so on. Each record is 28 bytes: `i64` timestamp followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling
 
@@ -140,7 +139,7 @@ dev/                    project rules and specs
 
 ### Metrics
 
-Published to `<out>/<backend>/metrics.json` only after successful replay, finalization, and tick conservation.
+- Published to `<out>/captured/<name>/<backend>/metrics.json` (SQLite: `capture-metrics.json`) only after successful replay, finalization, and tick conservation.
 
 - Configuration: backend, speed, `flush_ms`, `ring_cap`, batch and pending limits.
 - Throughput: `wall_time_s`, `ticks_total`, `ticks_per_s`.

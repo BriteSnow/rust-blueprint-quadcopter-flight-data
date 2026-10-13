@@ -13,6 +13,7 @@ pub struct MockInput {
     manifest: Manifest,
     reader: BufReader<File>,
     next_tick: u64,
+    tick_limit: u64,
 }
 
 pub const TICK_NS: u64 = 5_000_000;
@@ -48,19 +49,32 @@ impl MockInput {
         if !File::open(&story_path)?.metadata()?.is_file() {
             return Err(Error::custom("story.jsonl must be a regular file"));
         }
+        let tick_limit = manifest.tick_count;
         Ok(Self {
             manifest,
             reader: BufReader::with_capacity(1_048_576, ticks),
             next_tick: 0,
+            tick_limit,
         })
     }
 
     pub fn tick_count(&self) -> u64 {
-        self.manifest.tick_count
+        self.tick_limit
+    }
+
+    pub fn with_tick_limit(mut self, ticks: u64) -> Result<Self> {
+        if ticks == 0 || ticks > self.manifest.tick_count {
+            return Err(Error::custom(format!(
+                "requested {ticks} ticks is outside the dataset range of {} ticks",
+                self.manifest.tick_count
+            )));
+        }
+        self.tick_limit = ticks;
+        Ok(self)
     }
 
     pub fn validate_clock_range(&self) -> Result<()> {
-        let offset = (self.manifest.tick_count - 1)
+        let offset = (self.tick_limit - 1)
             .checked_mul(TICK_NS)
             .ok_or("realtime duration exceeds the clock range")?;
         if Instant::now()
@@ -73,7 +87,11 @@ impl MockInput {
     }
 
     pub fn next_tick(&mut self) -> Result<Option<Tick>> {
-        if self.next_tick == self.manifest.tick_count {
+        if self.next_tick == self.tick_limit {
+            // A truncated replay stops before the file end, so the trailing-byte check is skipped.
+            if self.tick_limit < self.manifest.tick_count {
+                return Ok(None);
+            }
             let mut extra = [0_u8; 1];
             if self.reader.read(&mut extra)? != 0 {
                 return Err(Error::custom("ticks.bin grew after startup validation"));
@@ -256,6 +274,24 @@ mod tests {
         assert_eq!(second.ts_ns, 5_000_000);
         assert_eq!(second.v, [5.0_f32; 5]);
         assert!(end.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_mock_in_with_tick_limit_stops_early() -> Result<()> {
+        // -- Setup & Fixtures
+        let directory = fixture_directory("test_mock_in_with_tick_limit_stops_early")?;
+
+        // -- Exec
+        let mut input = MockInput::open(&directory)?.with_tick_limit(1)?;
+        let first = input.next_tick()?;
+        let end = input.next_tick()?;
+
+        // -- Check
+        assert_eq!(input.tick_count(), 1);
+        assert!(first.is_some());
+        assert!(end.is_none());
+        assert!(MockInput::open(&directory)?.with_tick_limit(3).is_err());
         Ok(())
     }
 

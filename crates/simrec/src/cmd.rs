@@ -2,7 +2,7 @@ use simple_fs::SPath;
 
 use clap::{ArgGroup, Parser};
 
-use crate::{Error, Result};
+use crate::{mock_in::TICK_NS, Error, Result};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Replay sensor ticks through a dedicated capture pipeline")]
@@ -29,7 +29,7 @@ pub struct CliCmd {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     pub flush_ms: Option<u64>,
 
-    #[arg(long, default_value = "realtime", value_parser = ["realtime", "max"])]
+    #[arg(long, default_value = "real", value_parser = ["real", "max"])]
     pub speed: String,
 
     #[arg(long, default_value_t = 4096, value_parser = ring_capacity)]
@@ -73,6 +73,34 @@ pub fn duration_name(value: &str) -> Result<String> {
         Ok(format!("d{:03}", seconds / 86_400))
     } else {
         Ok(format!("m{:03}", seconds / 60))
+    }
+}
+
+pub fn duration_tick_count(value: &str) -> Result<u64> {
+    let seconds = duration_seconds(value).ok_or_else(|| {
+        Error::custom(format!(
+            "invalid duration {value:?}; expected d, h, or m followed by a positive integer"
+        ))
+    })?;
+    const NANOS_PER_SECOND: u64 = 1_000_000_000;
+    seconds
+        .checked_mul(NANOS_PER_SECOND / TICK_NS)
+        .ok_or_else(|| Error::custom(format!("duration {value:?} exceeds the tick range")))
+}
+
+/// Returns the mock dataset names that can serve a duration, in preference order.
+pub fn dataset_candidates(value: &str) -> Result<&'static [&'static str]> {
+    let seconds = duration_seconds(value).ok_or_else(|| {
+        Error::custom(format!(
+            "invalid duration {value:?}; expected d, h, or m followed by a positive integer"
+        ))
+    })?;
+    match seconds {
+        0..=86_400 => Ok(&["d001", "d010"][..]),
+        86_401..=864_000 => Ok(&["d010"][..]),
+        _ => Err(Error::custom(format!(
+            "duration {value:?} exceeds the 10-day mock dataset"
+        ))),
     }
 }
 
@@ -120,7 +148,7 @@ mod tests {
         assert_eq!(command.duration, "d1");
         assert_eq!(command.out.to_string(), "sandbox");
         assert_eq!(command.flush_ms, None);
-        assert_eq!(command.speed, "realtime");
+        assert_eq!(command.speed, "real");
         assert_eq!(command.ring_cap, 4096);
         Ok(())
     }
@@ -191,6 +219,37 @@ mod tests {
         for (duration, expected) in cases {
             assert_eq!(duration_name(duration)?, expected);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_cmd_duration_tick_count_simple() -> Result<()> {
+        // -- Setup & Fixtures
+        let cases = [("m1", 12_000), ("h1", 720_000), ("d1", 17_280_000)];
+
+        // -- Exec & Check
+        for (duration, expected) in cases {
+            assert_eq!(duration_tick_count(duration)?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_cmd_dataset_candidates_simple() -> Result<()> {
+        // -- Setup & Fixtures
+        let cases = [
+            ("m1", &["d001", "d010"][..]),
+            ("d1", &["d001", "d010"][..]),
+            ("h24", &["d001", "d010"][..]),
+            ("d2", &["d010"][..]),
+            ("d10", &["d010"][..]),
+        ];
+
+        // -- Exec & Check
+        for (duration, expected) in cases {
+            assert_eq!(dataset_candidates(duration)?, expected);
+        }
+        assert!(dataset_candidates("d11").is_err());
         Ok(())
     }
 }

@@ -6,6 +6,8 @@ const METRICS_FILE = "capture-metrics.json";
 const MANIFEST_FILE = "manifest.json";
 const TICK_SECONDS = 0.005;
 const DATASET_NAME = /^[dm]\d+$/;
+const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
+const SPEEDS = ["real", "max"];
 
 const KNOWN_BACKENDS = ["noop", "raw", "sqlite-no-index", "sqlite-with-index"];
 const FALLBACK_DATASETS = ["m001", "m010", "m030", "m060", "d001", "d010"];
@@ -77,7 +79,10 @@ async function loadReport() {
   renderStatus();
   try {
     const discovery = await discoverDatasets();
-    const datasets = await Promise.all(discovery.names.map(loadDataset));
+    const groups = groupRunDirs(discovery.runDirs);
+    const datasets = await Promise.all(
+      groups.map(({ name, speeds }) => loadDataset(name, speeds, discovery.mode === "listing")),
+    );
     state.discovery = discovery.mode;
     // Probed names are guesses, so only datasets with real runs are kept.
     state.datasets = datasets
@@ -100,34 +105,39 @@ async function discoverDatasets() {
   const explicit = new URLSearchParams(location.search).get("datasets");
   if (explicit) {
     const names = explicit.split(",").map((name) => name.trim()).filter(Boolean);
-    return { mode: "query", names };
+    return { mode: "query", runDirs: names.flatMap(speedRunDirs) };
   }
   const listed = await listDirectories(CAPTURED_DIR);
   if (listed) {
-    return { mode: "listing", names: listed.filter((name) => DATASET_NAME.test(name)) };
+    return { mode: "listing", runDirs: listed.map(parseRunDir).filter(Boolean) };
   }
-  return { mode: "probe", names: FALLBACK_DATASETS };
+  return { mode: "probe", runDirs: FALLBACK_DATASETS.flatMap(speedRunDirs) };
 }
 
-async function loadDataset(name) {
-  const datasetUrl = `${CAPTURED_DIR}${encodeURIComponent(name)}/`;
-  const listed = await listDirectories(datasetUrl);
-  const backends = listed ?? KNOWN_BACKENDS;
+async function loadDataset(name, speeds, listed) {
   const [manifest, runs] = await Promise.all([
     fetchJson(`${MOCK_DIR}${encodeURIComponent(name)}/${MANIFEST_FILE}`),
-    Promise.all(backends.map((backend) => loadRun(datasetUrl, backend))),
+    Promise.all(speeds.map((speed) => loadRunGroup(name, speed))),
   ]);
   return {
     name,
     manifest,
-    listed: listed !== null,
-    runs: runs.filter((run) => listed !== null || run.metrics !== null).sort(compareRuns),
+    listed,
+    runs: runs.flat().sort(compareRuns),
   };
 }
 
-async function loadRun(datasetUrl, backend) {
+async function loadRunGroup(name, speed) {
+  const datasetUrl = `${CAPTURED_DIR}${encodeURIComponent(`${name}-${speed}`)}/`;
+  const listed = await listDirectories(datasetUrl);
+  const backends = listed ?? KNOWN_BACKENDS;
+  const runs = await Promise.all(backends.map((backend) => loadRun(datasetUrl, backend, speed)));
+  return runs.filter((run) => listed !== null || run.metrics !== null);
+}
+
+async function loadRun(datasetUrl, backend, speed) {
   const metrics = await fetchJson(`${datasetUrl}${encodeURIComponent(backend)}/${METRICS_FILE}`);
-  return { backend, metrics };
+  return { backend, speed, metrics };
 }
 
 /// Returns the direct child directory names of a server directory listing, or null when unavailable.
@@ -242,7 +252,7 @@ function renderOverview() {
             h("span", { class: "overview-duration" }, durationLabel(dataset.name)),
           ),
           backends.map((backend) =>
-            renderOverviewCell(dataset.runs.find((run) => run.backend === backend)),
+            renderOverviewCell(dataset.runs.filter((run) => run.backend === backend)),
           ),
         ),
       ),
@@ -254,17 +264,21 @@ function renderOverview() {
   );
 }
 
-function renderOverviewCell(run) {
-  if (!run) {
+function renderOverviewCell(runs) {
+  if (!runs.length) {
     return h("td", { class: "overview-cell is-absent" }, "-");
   }
+  return h("td", { class: "overview-cell" }, runs.map((run) => renderOverviewLine(run)));
+}
+
+function renderOverviewLine(run) {
   if (!run.metrics) {
-    return h("td", { class: "overview-cell is-incomplete" }, "incomplete");
+    return h("div", {}, `${run.speed}: incomplete`);
   }
   return h(
-    "td",
-    { class: "overview-cell" },
-    h("span", { class: "overview-rate" }, formatRate(run.metrics.ticks_per_s)),
+    "div",
+    {},
+    h("span", { class: "overview-rate" }, `${run.speed}: ${formatRate(run.metrics.ticks_per_s)}`),
     h("span", { class: "overview-size" }, formatBytes(run.metrics.output_bytes)),
   );
 }
@@ -294,7 +308,6 @@ function renderPanel() {
     ui.panel.replaceChildren(renderEmptyState());
     return;
   }
-  const complete = dataset.runs.filter((run) => run.metrics);
   const sections = [
     renderDatasetHeader(dataset),
     renderWarnings(dataset),
@@ -306,8 +319,10 @@ function renderPanel() {
         ? h("div", { class: "cards-grid" }, dataset.runs.map((run) => renderRunCard(run, dataset)))
         : h("p", { class: "muted" }, "No backend folders found for this dataset."),
     ),
-    renderCharts(complete),
-    renderComparisonTable(complete),
+    ...speedGroups(dataset.runs).flatMap(({ speed, runs }) => {
+      const complete = runs.filter((run) => run.metrics);
+      return [renderCharts(complete, speed), renderComparisonTable(complete, speed)];
+    }),
   ];
   ui.panel.replaceChildren(...sections.filter(Boolean));
   drawCharts();
@@ -356,16 +371,18 @@ function renderWarnings(dataset) {
   if (!dataset.manifest) {
     messages.push(`Manifest not found at ${MOCK_DIR}${dataset.name}/${MANIFEST_FILE}; tick conservation is not checked.`);
   }
-  const configs = new Set(complete.map((run) => configKey(run.metrics)));
-  if (configs.size > 1) {
-    messages.push("Runs use different speed, flush interval, or ring capacity; comparisons are not like-for-like.");
+  for (const { speed, runs } of speedGroups(dataset.runs)) {
+    const configs = new Set(runs.filter((run) => run.metrics).map((run) => configKey(run.metrics)));
+    if (configs.size > 1) {
+      messages.push(`${speedLabel(speed)} runs use different flush interval or ring capacity; comparisons are not like-for-like.`);
+    }
   }
   const incomplete = dataset.runs.length - complete.length;
   if (incomplete > 0) {
     messages.push(`${incomplete} run(s) without ${METRICS_FILE}: incomplete, failed, or still running.`);
   }
   if (!dataset.listed) {
-    messages.push("Directory listing is unavailable, so backends were probed by known names only.");
+    messages.push("Directory listing is unavailable, so runs were probed by known names only.");
   }
   if (!messages.length) {
     return null;
@@ -424,7 +441,7 @@ function renderConservation(metrics, manifest) {
   );
 }
 
-function renderCharts(runs) {
+function renderCharts(runs, speed) {
   if (!runs.length) {
     return null;
   }
@@ -457,12 +474,12 @@ function renderCharts(runs) {
   return h(
     "section",
     { class: "report-section" },
-    h("h3", { class: "section-title" }, "Charts"),
+    h("h3", { class: "section-title" }, `Charts, ${speedLabel(speed)}`),
     h("div", { class: "charts-grid" }, figures),
   );
 }
 
-function renderComparisonTable(runs) {
+function renderComparisonTable(runs, speed) {
   if (!runs.length) {
     return null;
   }
@@ -499,7 +516,7 @@ function renderComparisonTable(runs) {
   return h(
     "section",
     { class: "report-section" },
-    h("h3", { class: "section-title" }, "Comparison"),
+    h("h3", { class: "section-title" }, `Comparison, ${speedLabel(speed)}`),
     h("div", { class: "table-wrap" }, h("table", { class: "comparison-table" }, head, body)),
     h("p", { class: "muted small" }, "Highlighted cells are the best value among recording backends; noop is excluded."),
   );
@@ -618,7 +635,41 @@ function sortBackends(backends) {
 }
 
 function compareRuns(a, b) {
-  return compareBackendNames(a.backend, b.backend);
+  return compareSpeeds(a.speed, b.speed) || compareBackendNames(a.backend, b.backend);
+}
+
+function compareSpeeds(a, b) {
+  return SPEEDS.indexOf(a) - SPEEDS.indexOf(b);
+}
+
+function speedGroups(runs) {
+  return SPEEDS.map((speed) => ({ speed, runs: runs.filter((run) => run.speed === speed) })).filter(
+    (group) => group.runs.length > 0,
+  );
+}
+
+function speedLabel(speed) {
+  return speed === "real" ? "Realtime" : "Max speed";
+}
+
+function speedRunDirs(name) {
+  return SPEEDS.map((speed) => ({ dataset: name, speed }));
+}
+
+function parseRunDir(dirName) {
+  const match = RUN_DIR_NAME.exec(dirName);
+  return match ? { dataset: match[1], speed: match[2] } : null;
+}
+
+function groupRunDirs(runDirs) {
+  const byDataset = new Map();
+  for (const { dataset, speed } of runDirs) {
+    if (!byDataset.has(dataset)) {
+      byDataset.set(dataset, []);
+    }
+    byDataset.get(dataset).push(speed);
+  }
+  return [...byDataset].map(([name, speeds]) => ({ name, speeds }));
 }
 
 function compareBackendNames(a, b) {

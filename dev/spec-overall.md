@@ -135,13 +135,16 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 | `--sql`       | (one of)    | SQLite WAL backend                          |
 | `--raw`       | (one of)    | hourly raw binary backend                   |
 | `--duration`  | `d1`        | input dataset, `d<N>`, `h<N>`, `m<N>`       |
-| `--out`       | `sandbox`   | `<out>/captured/<name>/<backend>/`          |
-| `--flush-ms`  | `10`        | positive consumer flush interval            |
-| `--speed`     | `realtime`  | `realtime` (deadline pacing) or `max`       |
+| `--out`       | `sandbox`   | `<out>/captured/<name>-<speed>/<backend>/`   |
+| `--flush-ms`  | `100`       | interval; 8192-tick size cap only if omitted |
+| `--speed`     | `real`      | `real` (deadline pacing) or `max`           |
 | `--ring-cap`  | `4096`      | ring capacity in messages, 1 to 65536       |
 
 - Exactly one backend flag is required.
+- `--duration` accepts `d<N>`, `h<N>`, or `m<N>` with N positive.
+- Input resolution: up to one day uses `mock-data/d001`, falling back to `mock-data/d010`. Spans above one day up to ten days use `mock-data/d010`. Longer spans are rejected. The replay is truncated to the requested span from the start of the dataset: the tick count is the duration in seconds times 200. For example, `--duration m5` replays the first 60,000 ticks of `d001`, and `--duration d1` replays all 17,280,000 ticks. The run folder uses the requested duration name, so `--duration m5` writes to `captured/m005-<speed>/`, and `--duration d1` writes to `captured/d001-<speed>/`.
 - Output directories must be new or empty. Nothing is removed automatically.
+- Run folder is `<name>-<speed>`, with `real` for `--speed real` and `max` for `--speed max`. Each speed has its own folder, so real and max runs of one dataset and backend can run in parallel.
 
 ### Startup Validation
 
@@ -157,10 +160,10 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 - Realtime pacing uses deadlines anchored to a monotonic start, so backpressure creates lateness rather than timestamp drift.
 - Ticks travel in `Vec<Tick>` messages of at most 1024 ticks.
 - A full ring keeps pending ticks in the producer. Stalls are counted. Input pauses when pending reaches 1024 ticks.
-- Consumer thread appends ticks to a batch and flushes when the interval elapses or the batch reaches 8192 ticks.
+- Consumer thread appends ticks to a batch and flushes when the interval elapses. Without `--flush-ms`, the interval is 100 ms and a batch is also flushed at 8192 ticks. With `--flush-ms`, there is no tick cap.
 - Final draining happens only after producer success is published and the ring is rechecked.
 - Both workers are joined before completion is reported.
-- Tick conservation is required: produced and recorded counts must equal the manifest count.
+- Tick conservation is required: produced and recorded counts must equal the replayed tick count, which is the requested span in ticks.
 
 ### Recorder Trait
 
@@ -170,8 +173,8 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `sandbox/captured/<name>/sqlite-no-index/capture.sqlite` or `sandbox/captured/<name>/sqlite-with-index/capture.sqlite` (the index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the with-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
-- Raw: `sandbox/captured/<name>/raw/seg-000000.bin` and so on. Each record is 28 bytes: `i64` timestamp followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
+- SQLite: `sandbox/captured/<name>-<speed>/sqlite-no-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-with-index/capture.sqlite` (the index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the with-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 28 bytes: `i64` timestamp followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling
 
@@ -182,7 +185,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 
 ### Metrics
 
-- Published to `<out>/captured/<name>/<backend>/capture-metrics.json` for every backend, only after successful replay, finalization, and tick conservation.
+- Published to `<out>/captured/<name>-<speed>/<backend>/capture-metrics.json` for every backend, only after successful replay, finalization, and tick conservation.
 
 - Configuration: backend, speed, `flush_ms`, `ring_cap`, batch and pending limits.
 - Throughput: `wall_time_s`, `ticks_total`, `ticks_per_s`.
@@ -222,7 +225,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 | Field | Type | Notes |
 | ----- | ---- | ----- |
 | `backend` | string | `noop`, `raw`, `sqlite-no-index`, or `sqlite-with-index` |
-| `speed` | string | `realtime` or `max` |
+| `speed` | string | `real` or `max` |
 | `flush_ms` | u64 | configured consumer flush interval |
 | `ring_cap` | usize | ring capacity in messages |
 | `max_pending_ticks` | usize | producer pending limit, currently 1024 |

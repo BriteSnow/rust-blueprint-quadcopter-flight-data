@@ -32,7 +32,7 @@ python3 -m http.server 8000
 
 | File | Use |
 | ---- | --- |
-| `sandbox/captured/<name>/<backend>/capture-metrics.json` | run metrics, schema in `dev/spec-overall.md` |
+| `sandbox/captured/<name>-<speed>/<backend>/capture-metrics.json` | run metrics, schema in `dev/spec-overall.md` |
 | `sandbox/mock-data/<name>/manifest.json` | expected tick count, input size, rate, seed |
 
 - A backend folder without `capture-metrics.json` is shown as incomplete. This covers runs that failed, were interrupted, or are still running.
@@ -40,15 +40,15 @@ python3 -m http.server 8000
 
 ## Discovery
 
-Datasets are found with the first method that works:
+Run folders are `<name>-<speed>`, where `<name>` is the mock dataset and `<speed>` is `real` (realtime) or `max`. Run folders are found with the first method that works:
 
-1. Query parameter: `report.html?datasets=d001,m030` lists datasets explicitly.
+1. Query parameter: `report.html?datasets=d001,m030` lists dataset names explicitly. Both speeds are probed for each name.
 
-2. Directory listing: an HTML listing of `sandbox/captured/` is parsed. Only direct child directories that match `^[dm]\d+$` are kept.
+2. Directory listing: an HTML listing of `sandbox/captured/` is parsed. Only direct child directories that match `^[dm]\d+-(real|max)$` are kept. Other folders, including the old `<name>/<backend>` layout, are ignored.
 
-3. Probe: when no listing is available, the page tries the known names `m001`, `m010`, `m030`, `m060`, `d001`, and `d010`. Datasets with no run found are dropped.
+3. Probe: when no listing is available, the page tries the known names `m001`, `m010`, `m030`, `m060`, `d001`, and `d010` with both `real` and `max`. Datasets with no run found are dropped.
 
-Backends in each dataset are found the same way:
+Backends in each run folder are found the same way:
 
 - With a directory listing, every child directory is shown, including incomplete runs and unknown backend names.
 
@@ -60,16 +60,16 @@ Backends in each dataset are found the same way:
 
 - **Header:** title, load status (dataset and run counts, discovery method, update time), and a **Refresh** button.
 
-- **Overview:** a table with one row per dataset and one column per backend. Each cell shows throughput and output size, `incomplete`, or `-`. Clicking a row selects that dataset.
+- **Overview:** a table with one row per dataset and one column per backend. Each cell has one line per speed (`real` or `max`) with throughput and output size, `incomplete`, or `-`. Clicking a row selects that dataset.
 
 - **Dataset tabs:** dataset name, duration label, and run count. The selected dataset is kept in the URL hash, for example `#d001`.
 
 - **Dataset panel:**
   - Header: name, duration, tick count, input size, rate, and seed.
-  - Warnings: missing manifest, mixed run configurations (speed, `flush_ms`, `ring_cap`), incomplete runs, and probe-only discovery.
+  - Warnings: missing manifest, mixed run configurations (`flush_ms`, `ring_cap`) within one speed, incomplete runs, and probe-only discovery.
   - Run cards: throughput, wall time, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, and the tick conservation badge.
-  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, and flush p99. Charts redraw on resize and support HiDPI screens.
-  - Comparison table: one row per metric and one column per backend. The best value in a row is highlighted.
+  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, and flush p99. One chart set is drawn per speed. Charts redraw on resize and support HiDPI screens.
+  - Comparison table: one row per metric and one column per backend, one table per speed, because realtime and max runs are not comparable. The best value in a row is highlighted.
 
 ## Derived Values
 

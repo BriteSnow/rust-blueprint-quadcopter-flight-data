@@ -13,7 +13,7 @@ use lib_common::event_base::new_spsc_bounded;
 use simple_fs::SPath;
 
 use crate::{
-    cmd::{duration_name, CliCmd},
+    cmd::{dataset_candidates, duration_name, duration_tick_count, CliCmd},
     metrics::Metrics,
     mock_in::MockInput,
     rec,
@@ -30,7 +30,7 @@ const DEFAULT_FLUSH_MS: u64 = 100;
 pub(super) fn run() -> Result<()> {
     let args = CliCmd::parse();
     let speed = match args.speed.as_str() {
-        "realtime" => ReplaySpeed::Realtime,
+        "real" => ReplaySpeed::Realtime,
         "max" => ReplaySpeed::Max,
         _ => return Err(Error::custom("unsupported replay speed")),
     };
@@ -41,9 +41,14 @@ pub(super) fn run() -> Result<()> {
         return Err(Error::custom("--flush-ms exceeds the monotonic clock range"));
     }
 
-    let name = duration_name(&args.duration)?;
-    let input = MockInput::open(&args.out.join("mock-data").join(&name))?;
+    let requested = duration_name(&args.duration)?;
+    let requested_ticks = duration_tick_count(&args.duration)?;
+    let (dataset_name, dataset) = resolve_dataset(&args.out.join("mock-data"), &args.duration)?;
+    let input = MockInput::open(&dataset)?.with_tick_limit(requested_ticks)?;
     let expected_ticks = input.tick_count();
+    if dataset_name != requested {
+        eprintln!("duration {requested} replays the first {expected_ticks} ticks of the {dataset_name} mock dataset");
+    }
     if matches!(speed, ReplaySpeed::Realtime) {
         input.validate_clock_range()?;
     }
@@ -56,7 +61,11 @@ pub(super) fn run() -> Result<()> {
     } else {
         "noop"
     };
-    let out = args.out.join("captured").join(&name).join(backend);
+    let out = args
+        .out
+        .join("captured")
+        .join(format!("{requested}-{}", speed_suffix(&speed)))
+        .join(backend);
     prepare_output(&out)?;
 
     let recorder: Box<dyn Recorder> = if args.raw {
@@ -104,6 +113,26 @@ fn prepare_output(directory: &SPath) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn resolve_dataset(mock_root: &SPath, duration: &str) -> Result<(String, SPath)> {
+    let candidates = dataset_candidates(duration)?;
+    for &name in candidates {
+        let directory = mock_root.join(name);
+        if fs::metadata(&directory).is_ok_and(|metadata| metadata.is_dir()) {
+            return Ok((name.to_string(), directory));
+        }
+    }
+    Err(Error::custom(format!(
+        "no mock dataset for {duration:?} under {mock_root}; expected one of {candidates:?}"
+    )))
+}
+
+fn speed_suffix(speed: &ReplaySpeed) -> &'static str {
+    match speed {
+        ReplaySpeed::Realtime => "real",
+        ReplaySpeed::Max => "max",
+    }
 }
 
 fn replay_workers(

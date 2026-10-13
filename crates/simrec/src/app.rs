@@ -55,7 +55,7 @@ pub(super) fn run() -> Result<()> {
     let recorder: Box<dyn Recorder> = if args.raw {
         Box::new(RawRecorder::new(&out))
     } else if args.sql {
-        Box::new(SqliteRecorder::new(&out)?)
+        Box::new(SqliteRecorder::new(&out, args.with_index)?)
     } else {
         Box::new(NoopRecorder)
     };

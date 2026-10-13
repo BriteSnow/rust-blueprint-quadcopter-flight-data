@@ -15,6 +15,9 @@ pub struct CliCmd {
     #[arg(long)]
     pub raw: bool,
 
+    #[arg(long, requires = "sql")]
+    pub with_index: bool,
+
     #[arg(long, default_value = "data/mock", value_parser = sensor_path)]
     pub mock_dir: SPath,
 
@@ -72,6 +75,7 @@ mod tests {
         assert!(command.noop);
         assert!(!command.sql);
         assert!(!command.raw);
+        assert!(!command.with_index);
         assert_eq!(command.mock_dir.to_string(), "data/mock");
         assert_eq!(command.out.to_string(), ".out");
         assert_eq!(command.flush_ms, 10);
@@ -108,6 +112,7 @@ mod tests {
             &["simrec"],
             &["simrec", "--noop", "--raw"],
             &["simrec", "--sql", "--raw"],
+            &["simrec", "--noop", "--with-index"],
             &["simrec", "--noop", "--flush-ms", "0"],
             &["simrec", "--noop", "--ring-cap", "0"],
             &["simrec", "--noop", "--ring-cap", "65537"],

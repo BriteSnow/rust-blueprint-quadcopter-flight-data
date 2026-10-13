@@ -17,7 +17,7 @@ pub struct SqliteRecorder {
 }
 
 impl SqliteRecorder {
-    pub fn new(directory: &SPath) -> Result<Self> {
+    pub fn new(directory: &SPath, with_index: bool) -> Result<Self> {
         let database_path = directory.join(DATABASE_FILENAME);
         let file = OpenOptions::new()
             .write(true)
@@ -52,9 +52,12 @@ impl SqliteRecorder {
                 rotor_rl REAL,
                 rotor_rr REAL,
                 accel_z REAL
-            );
-            CREATE INDEX idx_samples_accel_z ON samples (accel_z);",
+            );",
         )?;
+
+        if with_index {
+            connection.execute_batch("CREATE INDEX idx_samples_accel_z ON samples (accel_z);")?;
+        }
 
         Ok(Self {
             connection: Some(connection),
@@ -159,7 +162,7 @@ mod tests {
                 v: [-1.0, -2.0, -3.0, -4.0, 8.5],
             },
         ];
-        let mut recorder = SqliteRecorder::new(&directory)?;
+        let mut recorder = SqliteRecorder::new(&directory, false)?;
         let connection = recorder
             .connection
             .as_ref()
@@ -228,7 +231,7 @@ mod tests {
                 v: [2.0; 5],
             },
         ];
-        let mut recorder = SqliteRecorder::new(&directory)?;
+        let mut recorder = SqliteRecorder::new(&directory, false)?;
 
         // -- Exec
         let result = recorder.write_batch(&duplicate_ticks);
@@ -254,7 +257,7 @@ mod tests {
         fs::write(&database_path, original)?;
 
         // -- Exec
-        let result = SqliteRecorder::new(&directory);
+        let result = SqliteRecorder::new(&directory, false);
 
         // -- Check
         assert!(result.is_err());
@@ -262,7 +265,33 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_rec_sqlite_index_is_opt_in() -> Result<()> {
+        // -- Setup & Fixtures
+        let without_index = fixture_directory("test_rec_sqlite_index_is_opt_in_without")?;
+        let with_index = fixture_directory("test_rec_sqlite_index_is_opt_in_with")?;
+
+        // -- Exec
+        Box::new(SqliteRecorder::new(&without_index, false)?).finish()?;
+        Box::new(SqliteRecorder::new(&with_index, true)?).finish()?;
+
+        // -- Check
+        assert_eq!(count_accel_z_index(&without_index)?, 0);
+        assert_eq!(count_accel_z_index(&with_index)?, 1);
+        Ok(())
+    }
+
     // -- Test Support
+
+    fn count_accel_z_index(directory: &SPath) -> Result<i64> {
+        let connection = Connection::open(directory.join(DATABASE_FILENAME))?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_samples_accel_z'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
 
     fn fixture_directory(test_name: &str) -> Result<SPath> {
         let unique = std::time::SystemTime::now()

@@ -50,7 +50,8 @@ Replays a mock dataset through the capture pipeline into exactly one backend.
 
 ```sh
 cargo run --release -p simrec -- --noop --mock-dir data/mock/1d --speed max
-cargo run --release -p simrec -- --sql --mock-dir data/mock/1d --speed max
+cargo run --release -p simrec -- --sql --mock-dir data/mock/1d --speed max --out .out/sql-no-index
+cargo run --release -p simrec -- --sql --mock-dir data/mock/1d --speed max --out .out/sql-with-index --with-index --flush-ms 100
 cargo run --release -p simrec -- --raw --mock-dir data/mock/1d --speed max
 cargo run --release -p simrec -- --raw --mock-dir data/mock/1d --speed realtime --out .out/realtime
 ```
@@ -66,6 +67,7 @@ Options:
       --noop
       --sql
       --raw
+      --with-index
       --mock-dir <MOCK_DIR>  [default: data/mock]
       --out <OUT>            [default: .out]
       --flush-ms <FLUSH_MS>  [default: 10]
@@ -76,6 +78,10 @@ Options:
 ```
 
 - Exactly one of `--noop`, `--sql`, or `--raw` is required.
+
+- `--with-index` is opt-in, valid only with `--sql`, and creates the `accel_z` index.
+
+- Use a separate `--out` directory for each SQLite variant, because output directories must be empty.
 
 - `--noop` is a pipeline diagnostic and writes no recording.
 

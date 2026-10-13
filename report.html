@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sensor Capture Report</title>
+<link rel="stylesheet" href="report/main.css">
+<script type="module" src="report/main.js"></script>
+</head>
+<body>
+<header class="app-header">
+  <div class="app-title">
+    <h1>Sensor Capture Report</h1>
+    <p class="app-subtitle">SQLite WAL and raw binary capture runs from <code>sandbox/captured/</code></p>
+  </div>
+  <div class="app-actions">
+    <span class="app-status">Loading...</span>
+    <button type="button" class="refresh-button">Refresh</button>
+  </div>
+</header>
+<main class="app-main">
+  <section class="overview"></section>
+  <nav class="dataset-nav" aria-label="Datasets"></nav>
+  <section class="dataset-panel"></section>
+</main>
+</body>
+</html>

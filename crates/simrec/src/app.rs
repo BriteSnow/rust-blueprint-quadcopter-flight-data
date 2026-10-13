@@ -81,11 +81,7 @@ pub(super) fn run() -> Result<()> {
         produced,
         recorded,
     );
-    if args.sql {
-        metrics.publish_as(&out, "capture-metrics.json")?;
-    } else {
-        metrics.publish(&out)?;
-    }
+    metrics.publish(&out)?;
     eprintln!(
         "{backend} replay completed: {expected_ticks} ticks; metrics in {}.",
         out

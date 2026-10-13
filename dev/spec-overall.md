@@ -65,8 +65,51 @@ dev/                    project rules and specs
 
 - `ticks.bin`: headerless little-endian `[f32; 5]` records, 20 bytes per tick.
 - `story.jsonl`: contiguous half-open `[start_tick, end_tick)` maneuver segments with `maneuver` and `intensity`.
-- `manifest.json`: version 1 with `seed`, `rate_hz`, `channels`, `tick_count`, `start_ns`, `bytes_per_tick`.
+- `manifest.json`: version 1 completion record, schema below.
 - The manifest is written last and is the completion marker.
+
+#### story.jsonl schema
+
+One compact JSON object per line, in segment order. Segments are contiguous and cover `[0, tick_count)`.
+
+```json
+{"start_tick":0,"end_tick":36000,"maneuver":"hover","intensity":0.6234}
+```
+
+- `start_tick`, `end_tick`: `u64`, half-open range in ticks.
+- `maneuver`: one of `hover`, `climb`, `descend`, `forward`, `backward`, `bank_left`, `bank_right`, `yaw_cw`, `yaw_ccw`, `gust`.
+- `intensity`: `f32` in `[0.2, 1.0]`.
+- `ramp_ticks` is internal and is never written.
+
+#### manifest.json schema
+
+Pretty-printed JSON with a trailing newline. All keys are always present.
+
+```json
+{
+  "version": 1,
+  "seed": 42,
+  "rate_hz": 200,
+  "channels": [
+    "rotor_fl",
+    "rotor_fr",
+    "rotor_rl",
+    "rotor_rr",
+    "accel_z"
+  ],
+  "tick_count": 17280000,
+  "start_ns": 0,
+  "bytes_per_tick": 20
+}
+```
+
+- `version`: `u32`, currently `1`.
+- `seed`: `u64`, the generator seed.
+- `rate_hz`: `u32`, always `200`.
+- `channels`: array of five strings in tick order.
+- `tick_count`: `u64`, total ticks. `ticks.bin` must be exactly `tick_count * 20` bytes.
+- `start_ns`: `i64`, always `0`.
+- `bytes_per_tick`: `usize`, always `20`.
 
 ### Synthesis
 
@@ -139,7 +182,7 @@ dev/                    project rules and specs
 
 ### Metrics
 
-- Published to `<out>/captured/<name>/<backend>/metrics.json` (SQLite: `capture-metrics.json`) only after successful replay, finalization, and tick conservation.
+- Published to `<out>/captured/<name>/<backend>/capture-metrics.json` for every backend, only after successful replay, finalization, and tick conservation.
 
 - Configuration: backend, speed, `flush_ms`, `ring_cap`, batch and pending limits.
 - Throughput: `wall_time_s`, `ticks_total`, `ticks_per_s`.
@@ -148,6 +191,54 @@ dev/                    project rules and specs
 - Finalization: `finish_ms`.
 - Size: `output_bytes`.
 - Publication uses a synced temporary file and a non-overwriting hard link.
+
+#### capture-metrics.json schema
+
+Pretty-printed JSON with a trailing newline. The schema is the same for every backend, and all keys are always present.
+
+```json
+{
+  "backend": "noop",
+  "speed": "max",
+  "flush_ms": 10,
+  "ring_cap": 4096,
+  "max_pending_ticks": 1024,
+  "max_batch_ticks": 8192,
+  "ticks_total": 17280000,
+  "wall_time_s": 12.5,
+  "ticks_per_s": 1382400.0,
+  "stall_count": 0,
+  "max_pending_len": 0,
+  "flush_count": 2110,
+  "flush_ms_p50": 0.262144,
+  "flush_ms_p99": 1.048576,
+  "flush_ms_max": 2.097152,
+  "percentile_method": "nearest-rank power-of-two nanosecond bucket upper bound",
+  "finish_ms": 0.01,
+  "output_bytes": 0
+}
+```
+
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `backend` | string | `noop`, `raw`, `sqlite-no-index`, or `sqlite-with-index` |
+| `speed` | string | `realtime` or `max` |
+| `flush_ms` | u64 | configured consumer flush interval |
+| `ring_cap` | usize | ring capacity in messages |
+| `max_pending_ticks` | usize | producer pending limit, currently 1024 |
+| `max_batch_ticks` | usize | consumer batch limit, currently 8192 |
+| `ticks_total` | u64 | ticks recorded by the consumer |
+| `wall_time_s` | f64 | replay wall time in seconds |
+| `ticks_per_s` | f64 | `ticks_total / wall_time_s`, `0.0` when wall time is zero |
+| `stall_count` | u64 | producer ring-full events |
+| `max_pending_len` | usize | peak pending ticks in the producer |
+| `flush_count` | u64 | number of consumer flushes |
+| `flush_ms_p50` | f64 | flush latency estimate in ms, power-of-two bucket upper bound |
+| `flush_ms_p99` | f64 | flush latency estimate in ms, power-of-two bucket upper bound |
+| `flush_ms_max` | f64 | exact maximum flush latency in ms |
+| `percentile_method` | string | fixed description of the percentile estimate |
+| `finish_ms` | f64 | recorder finalization time in ms |
+| `output_bytes` | u64 | finalized output bytes, `0` for noop |
 
 ## Conventions
 

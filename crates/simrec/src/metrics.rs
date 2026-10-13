@@ -13,6 +13,8 @@ use crate::{
     Result,
 };
 
+pub const METRICS_FILE_NAME: &str = "capture-metrics.json";
+
 #[derive(Serialize)]
 pub struct Metrics {
     backend: &'static str,
@@ -79,11 +81,7 @@ impl Metrics {
     }
 
     pub fn publish(&self, directory: &SPath) -> Result<()> {
-        self.publish_as(directory, "metrics.json")
-    }
-
-    pub fn publish_as(&self, directory: &SPath, file_name: &str) -> Result<()> {
-        let temporary_path = directory.join(format!(".{file_name}.tmp"));
+        let temporary_path = directory.join(format!(".{METRICS_FILE_NAME}.tmp"));
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -92,7 +90,7 @@ impl Metrics {
         file.write_all(b"\n")?;
         file.sync_all()?;
         drop(file);
-        fs::hard_link(&temporary_path, directory.join(file_name))?;
+        fs::hard_link(&temporary_path, directory.join(METRICS_FILE_NAME))?;
         if let Err(error) = fs::remove_file(&temporary_path) {
             eprintln!("simrec: metrics published, but temporary cleanup failed: {error}");
         }
@@ -220,13 +218,13 @@ mod tests {
 
         // -- Exec
         metrics.publish(&directory)?;
-        let bytes = std::fs::read(directory.join("metrics.json"))?;
+        let bytes = std::fs::read(directory.join("capture-metrics.json"))?;
         let actual: serde_json::Value = serde_json::from_slice(&bytes)?;
 
         // -- Check
         assert_eq!(actual, expected);
         assert_eq!(bytes.last(), Some(&b'\n'));
-        assert!(!std::fs::exists(directory.join(".metrics.json.tmp"))?);
+        assert!(!std::fs::exists(directory.join(".capture-metrics.json.tmp"))?);
         assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
         Ok(())
     }
@@ -237,15 +235,15 @@ mod tests {
         let directory = fixture_directory("test_metrics_publish_existing_destination")?;
         let metrics = fixture_metrics();
         metrics.publish(&directory)?;
-        let original = std::fs::read(directory.join("metrics.json"))?;
+        let original = std::fs::read(directory.join("capture-metrics.json"))?;
         let mut replacement = fixture_metrics();
         replacement.ticks_total = 999;
 
         // -- Exec
         let result = replacement.publish(&directory);
-        let retained = std::fs::read(directory.join("metrics.json"))?;
+        let retained = std::fs::read(directory.join("capture-metrics.json"))?;
         let temporary: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(directory.join(".metrics.json.tmp"))?,
+            &std::fs::read(directory.join(".capture-metrics.json.tmp"))?,
         )?;
 
         // -- Check
@@ -260,7 +258,7 @@ mod tests {
         // -- Setup & Fixtures
         let directory =
             fixture_directory("test_metrics_publish_existing_temporary_file")?;
-        let temporary_path = directory.join(".metrics.json.tmp");
+        let temporary_path = directory.join(".capture-metrics.json.tmp");
         let original = b"retained partial publication";
         std::fs::write(&temporary_path, original)?;
         let metrics = fixture_metrics();
@@ -275,7 +273,7 @@ mod tests {
                 if error.kind() == std::io::ErrorKind::AlreadyExists
         ));
         assert_eq!(std::fs::read(&temporary_path)?, original);
-        assert!(!std::fs::exists(directory.join("metrics.json"))?);
+        assert!(!std::fs::exists(directory.join("capture-metrics.json"))?);
         Ok(())
     }
 

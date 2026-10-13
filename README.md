@@ -89,7 +89,7 @@ Options:
 
 - Recordings go to `<out>/captured/<name>/<backend>/`, such as `sandbox/captured/d001/sqlite-no-index/capture.sqlite`, `sandbox/captured/d001/sqlite-with-index/capture.sqlite`, or `sandbox/captured/d001/raw/seg-000000.bin`.
 
-- `metrics.json` is published only after successful replay and tick conservation. SQLite uses `capture-metrics.json`.
+- `capture-metrics.json` is published in each backend folder only after successful replay and tick conservation.
 
 - Output directories must be new or empty. Nothing is removed automatically.
 

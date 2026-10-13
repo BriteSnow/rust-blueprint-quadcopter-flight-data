@@ -26,8 +26,8 @@ pub struct CliCmd {
     #[arg(short, long, default_value = "sandbox", value_parser = sensor_path)]
     pub out: SPath,
 
-    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
-    pub flush_ms: u64,
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub flush_ms: Option<u64>,
 
     #[arg(long, default_value = "realtime", value_parser = ["realtime", "max"])]
     pub speed: String,
@@ -119,7 +119,7 @@ mod tests {
         assert!(!command.with_index);
         assert_eq!(command.duration, "d1");
         assert_eq!(command.out.to_string(), "sandbox");
-        assert_eq!(command.flush_ms, 10);
+        assert_eq!(command.flush_ms, None);
         assert_eq!(command.speed, "realtime");
         assert_eq!(command.ring_cap, 4096);
         Ok(())

@@ -25,6 +25,8 @@ use crate::{
     Error, Result,
 };
 
+const DEFAULT_FLUSH_MS: u64 = 100;
+
 pub(super) fn run() -> Result<()> {
     let args = CliCmd::parse();
     let speed = match args.speed.as_str() {
@@ -32,7 +34,9 @@ pub(super) fn run() -> Result<()> {
         "max" => ReplaySpeed::Max,
         _ => return Err(Error::custom("unsupported replay speed")),
     };
-    let flush_interval = Duration::from_millis(args.flush_ms);
+    let flush_ms = args.flush_ms.unwrap_or(DEFAULT_FLUSH_MS);
+    let flush_interval = Duration::from_millis(flush_ms);
+    let max_batch = args.flush_ms.is_none().then_some(rec::MAX_BATCH_TICKS);
     if Instant::now().checked_add(flush_interval).is_none() {
         return Err(Error::custom("--flush-ms exceeds the monotonic clock range"));
     }
@@ -64,7 +68,7 @@ pub(super) fn run() -> Result<()> {
     };
     let started = Instant::now();
     let (produced, recorded) =
-        replay_workers(input, recorder, speed, flush_interval, args.ring_cap)?;
+        replay_workers(input, recorder, speed, flush_interval, max_batch, args.ring_cap)?;
 
     if produced.ticks_total != expected_ticks || recorded.ticks_total != expected_ticks {
         return Err(Error::custom(format!(
@@ -75,7 +79,7 @@ pub(super) fn run() -> Result<()> {
     let metrics = Metrics::from_run(
         backend,
         args.speed,
-        args.flush_ms,
+        flush_ms,
         args.ring_cap,
         started.elapsed(),
         produced,
@@ -107,6 +111,7 @@ fn replay_workers(
     recorder: Box<dyn Recorder>,
     speed: ReplaySpeed,
     flush_interval: Duration,
+    max_batch: Option<usize>,
     ring_cap: usize,
 ) -> Result<(sim::ProducerStats, rec::ConsumerStats)> {
     let (producer, consumer) = new_spsc_bounded("sensor-capture", ring_cap)?;
@@ -138,6 +143,7 @@ fn replay_workers(
                     consumer,
                     recorder,
                     flush_interval,
+                    max_batch,
                     &consumer_finished,
                     &consumer_cancelled,
                 );

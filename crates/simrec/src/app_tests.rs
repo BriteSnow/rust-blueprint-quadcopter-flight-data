@@ -82,6 +82,7 @@ mod test_cases {
             Box::new(recorder),
             ReplaySpeed::Max,
             Duration::from_secs(60),
+            Some(rec::MAX_BATCH_TICKS),
             1,
         )?;
 
@@ -115,6 +116,7 @@ mod test_cases {
             Box::new(recorder),
             ReplaySpeed::Max,
             Duration::ZERO,
+            Some(rec::MAX_BATCH_TICKS),
             1,
         );
 
@@ -147,6 +149,7 @@ mod test_cases {
             Box::new(recorder),
             ReplaySpeed::Max,
             Duration::from_secs(60),
+            Some(rec::MAX_BATCH_TICKS),
             1,
         );
 
@@ -181,6 +184,7 @@ mod test_cases {
             Box::new(recorder),
             ReplaySpeed::Max,
             Duration::ZERO,
+            Some(rec::MAX_BATCH_TICKS),
             1,
         );
 
@@ -218,6 +222,7 @@ mod test_cases {
             Box::new(recorder),
             ReplaySpeed::Max,
             Duration::from_millis(10),
+            Some(rec::MAX_BATCH_TICKS),
             1,
         );
 
@@ -258,6 +263,7 @@ mod test_cases {
             Box::new(recorder),
             ReplaySpeed::Max,
             Duration::from_millis(10),
+            Some(rec::MAX_BATCH_TICKS),
             1,
         );
 

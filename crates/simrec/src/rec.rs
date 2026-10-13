@@ -26,6 +26,7 @@ pub fn consume(
     mut consumer: SyncSpscRx<Vec<Tick>>,
     mut recorder: Box<dyn Recorder>,
     interval: Duration,
+    max_batch: Option<usize>,
     producer_done: &AtomicBool,
     cancelled: &AtomicBool,
 ) -> Result<ConsumerStats> {
@@ -48,6 +49,7 @@ pub fn consume(
                     &mut batch,
                     &mut stats,
                     interval,
+                    max_batch,
                     &mut last_flush,
                 )?;
             }
@@ -62,6 +64,7 @@ pub fn consume(
                                 &mut batch,
                                 &mut stats,
                                 interval,
+                                max_batch,
                                 &mut last_flush,
                             )?;
                             continue;
@@ -95,11 +98,14 @@ fn consume_message(
     batch: &mut Vec<Tick>,
     stats: &mut ConsumerStats,
     interval: Duration,
+    max_batch: Option<usize>,
     last_flush: &mut Instant,
 ) -> Result<()> {
     for tick in message {
         batch.push(tick);
-        if batch.len() == MAX_BATCH_TICKS || last_flush.elapsed() >= interval {
+        if max_batch.is_some_and(|limit| batch.len() == limit)
+            || last_flush.elapsed() >= interval
+        {
             flush(recorder, batch, stats)?;
             *last_flush = Instant::now();
         }
@@ -153,6 +159,7 @@ mod tests {
             consumer,
             Box::new(NoopRecorder),
             Duration::from_secs(60),
+            Some(MAX_BATCH_TICKS),
             &producer_done,
             &cancelled,
         )?;
@@ -175,6 +182,7 @@ mod tests {
             consumer,
             Box::new(NoopRecorder),
             Duration::from_millis(10),
+            Some(MAX_BATCH_TICKS),
             &producer_done,
             &cancelled,
         );
@@ -207,6 +215,7 @@ mod tests {
             consumer,
             Box::new(recorder),
             Duration::from_secs(86_400),
+            Some(MAX_BATCH_TICKS),
             &producer_done,
             &cancelled,
         )?;
@@ -216,6 +225,39 @@ mod tests {
         assert_eq!(*calls, vec![MAX_BATCH_TICKS, 1, 0]);
         assert_eq!(stats.ticks_total, MAX_BATCH_TICKS as u64 + 1);
         assert_eq!(stats.flushes.count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_rec_consume_age_only_no_size_flush() -> Result<()> {
+        // -- Setup & Fixtures
+        let (mut producer, consumer) = new_spsc_bounded("rec-age-only", 1)?;
+        let tick = Tick { ts_ns: 0, v: [1.0; 5] };
+        queue_ticks(&mut producer, vec![tick; MAX_BATCH_TICKS + 1])?;
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorder = TestRecorder {
+            calls: Arc::clone(&calls),
+            fail_write: false,
+            fail_finish: false,
+        };
+        let producer_done = AtomicBool::new(true);
+        let cancelled = AtomicBool::new(false);
+
+        // -- Exec
+        let stats = consume(
+            consumer,
+            Box::new(recorder),
+            Duration::from_secs(86_400),
+            None,
+            &producer_done,
+            &cancelled,
+        )?;
+
+        // -- Check
+        let calls = calls.lock().map_err(|_| "test recorder lock poisoned")?;
+        assert_eq!(*calls, vec![MAX_BATCH_TICKS + 1, 0]);
+        assert_eq!(stats.ticks_total, MAX_BATCH_TICKS as u64 + 1);
+        assert_eq!(stats.flushes.count(), 1);
         Ok(())
     }
 
@@ -238,6 +280,7 @@ mod tests {
             consumer,
             Box::new(recorder),
             Duration::from_secs(60),
+            Some(MAX_BATCH_TICKS),
             &producer_done,
             &cancelled,
         );
@@ -269,6 +312,7 @@ mod tests {
             consumer,
             Box::new(recorder),
             Duration::from_secs(60),
+            Some(MAX_BATCH_TICKS),
             &producer_done,
             &cancelled,
         );

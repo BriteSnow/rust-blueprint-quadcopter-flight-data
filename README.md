@@ -68,7 +68,7 @@ Options:
       --with-index
       --duration <DURATION>  [default: d1]
   -o, --out <OUT>            [default: sandbox]
-      --flush-ms <FLUSH_MS>  [default: 10]
+      --flush-ms <FLUSH_MS>
       --speed <SPEED>        [default: realtime] [possible values: realtime, max]
       --ring-cap <RING_CAP>  [default: 4096]
   -h, --help                 Print help
@@ -84,6 +84,10 @@ Options:
 - `--noop` is a pipeline diagnostic and writes no recording.
 
 - `--flush-ms` must be positive; `--ring-cap` accepts 1 to 65536 messages.
+
+- Without `--flush-ms`, a batch is written every 100 ms or at 8192 ticks, whichever comes first.
+
+- With `--flush-ms`, a batch is written only when that age is reached, with no tick cap.
 
 ## Output
 

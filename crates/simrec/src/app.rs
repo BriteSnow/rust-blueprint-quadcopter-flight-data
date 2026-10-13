@@ -49,7 +49,11 @@ pub(super) fn run() -> Result<()> {
     } else {
         "noop"
     };
-    let out = args.out.join(backend);
+    let out = if backend == "sqlite" {
+        args.out.clone()
+    } else {
+        args.out.join(backend)
+    };
     prepare_output(&out)?;
 
     let recorder: Box<dyn Recorder> = if args.raw {
@@ -78,7 +82,11 @@ pub(super) fn run() -> Result<()> {
         produced,
         recorded,
     );
-    metrics.publish(&out)?;
+    if backend == "sqlite" {
+        metrics.publish_as(&out, "capture-metrics.json")?;
+    } else {
+        metrics.publish(&out)?;
+    }
     eprintln!(
         "{backend} replay completed: {expected_ticks} ticks; metrics in {}.",
         out

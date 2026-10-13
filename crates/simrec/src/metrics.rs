@@ -79,7 +79,11 @@ impl Metrics {
     }
 
     pub fn publish(&self, directory: &SPath) -> Result<()> {
-        let temporary_path = directory.join(".metrics.json.tmp");
+        self.publish_as(directory, "metrics.json")
+    }
+
+    pub fn publish_as(&self, directory: &SPath, file_name: &str) -> Result<()> {
+        let temporary_path = directory.join(format!(".{file_name}.tmp"));
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -88,7 +92,7 @@ impl Metrics {
         file.write_all(b"\n")?;
         file.sync_all()?;
         drop(file);
-        fs::hard_link(&temporary_path, directory.join("metrics.json"))?;
+        fs::hard_link(&temporary_path, directory.join(file_name))?;
         if let Err(error) = fs::remove_file(&temporary_path) {
             eprintln!("simrec: metrics published, but temporary cleanup failed: {error}");
         }

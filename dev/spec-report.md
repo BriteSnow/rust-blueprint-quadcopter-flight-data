@@ -3,7 +3,7 @@
 ## Purpose
 
 - Show a browser dashboard of the capture runs available under `sandbox/captured/`.
-- Compare backends (`noop`, `raw`, `sqlite-no-index`, `sqlite-with-index`) for each dataset.
+- Compare backends (`noop`, `raw`, `sqlite-pk-index`, `sqlite-all-index`) for each dataset.
 - Use only the files the tools already write. Rust code does not change.
 
 ## Files

@@ -199,7 +199,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `sandbox/captured/<name>-<speed>/sqlite-no-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-with-index/capture.sqlite` (the index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the with-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- SQLite: `sandbox/captured/<name>-<speed>/sqlite-pk-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-all-index/capture.sqlite` (the all-index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the all-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
 - Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 28 bytes: little-endian `i64` `ts_us` (epoch microseconds) followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling
@@ -250,7 +250,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 
 | Field | Type | Notes |
 | ----- | ---- | ----- |
-| `backend` | string | `noop`, `raw`, `sqlite-no-index`, or `sqlite-with-index` |
+| `backend` | string | `noop`, `raw`, `sqlite-pk-index`, or `sqlite-all-index` |
 | `speed` | string | `real` or `max` |
 | `flush_ms` | u64 | configured consumer flush interval |
 | `ring_cap` | usize | ring capacity in messages |

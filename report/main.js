@@ -12,15 +12,15 @@ const DATASET_NAME = /^[dm]\d+$/;
 const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
 const SPEEDS = ["real", "max"];
 
-const KNOWN_BACKENDS = ["noop", "raw", "sqlite-no-index", "sqlite-with-index"];
+const KNOWN_BACKENDS = ["noop", "raw", "sqlite-pk-index", "sqlite-all-index"];
 const FALLBACK_DATASETS = ["m001", "m005", "m010", "m030", "m060", "d001", "d010"];
 const MANIFEST_FALLBACKS = ["d001", "d010"];
 
 const BACKEND_COLORS = {
   noop: "#8a94a6",
   raw: "#2f9e6e",
-  "sqlite-no-index": "#3b7dd8",
-  "sqlite-with-index": "#d9822b",
+  "sqlite-pk-index": "#3b7dd8",
+  "sqlite-all-index": "#d9822b",
 };
 const EXTRA_COLORS = ["#a855f7", "#e11d48", "#0891b2", "#65a30d"];
 

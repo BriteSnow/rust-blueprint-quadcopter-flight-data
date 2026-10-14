@@ -96,7 +96,7 @@ Options:
 
 - Exactly one of `--noop`, `--sql`, or `--raw` is required.
 
-- `--with-index` is opt-in, valid only with `--sql`, and creates the `accel_z` index. Its output goes to `sqlite-with-index/`, so it can run beside `sqlite-no-index/` for the same duration.
+- `--with-index` is opt-in, valid only with `--sql`, and creates the `accel_z` index. Its output goes to `sqlite-all-index/`, so it can run beside `sqlite-pk-index/` for the same duration.
 
 - The input is read from `<out>/mock-data/<name>`. Durations up to one day use `d001`, falling back to `d010`; longer durations up to ten days use `d010`. Each run writes to `captured/<name>-<speed>/<backend>/`, using the requested duration name (for example `m001` for `--duration m1`), where `<speed>` is `real` for `--speed real` and `max` for `--speed max`. The replay covers only the requested span from the start of the dataset, so `--duration m1` replays the first 12,000 ticks of `d001`. Real and max runs of the same dataset and backend can run in parallel. Repeating the same run needs its folder removed or moved first, because output directories must be empty.
 
@@ -118,7 +118,7 @@ Options:
 
 ## Output
 
-- Recordings go to `<out>/captured/<name>-<speed>/<backend>/`, such as `sandbox/captured/d001-max/sqlite-no-index/capture.sqlite`, `sandbox/captured/d001-real/sqlite-with-index/capture.sqlite`, or `sandbox/captured/d001-max/raw/seg-000000.bin`.
+- Recordings go to `<out>/captured/<name>-<speed>/<backend>/`, such as `sandbox/captured/d001-max/sqlite-pk-index/capture.sqlite`, `sandbox/captured/d001-real/sqlite-all-index/capture.sqlite`, or `sandbox/captured/d001-max/raw/seg-000000.bin`.
 
 - `capture-metrics.json` is published in each backend folder only after successful replay and tick conservation.
 

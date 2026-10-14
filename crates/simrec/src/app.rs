@@ -47,9 +47,9 @@ pub(super) fn run() -> Result<()> {
 	let backend = if args.raw {
 		"raw"
 	} else if args.sql && args.with_index {
-		"sqlite-with-index"
+		"sqlite-all-index"
 	} else if args.sql {
-		"sqlite-no-index"
+		"sqlite-pk-index"
 	} else {
 		"noop"
 	};

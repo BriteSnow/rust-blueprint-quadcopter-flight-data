@@ -6,6 +6,8 @@ Proof of concept comparing SQLite WAL capture with append-only raw binary captur
 
 - `crates/lib-common/`: shared named, bounded SPSC facade.
 
+- `crates/lib-os/`: per-thread and process CPU and RSS sampling (macOS only).
+
 - `crates/mocker/`: deterministic mock dataset generator.
 
 - `crates/simrec/`: replay pipeline, recording backends, and metrics.
@@ -83,6 +85,7 @@ Options:
       --flush-ms <FLUSH_MS>
       --speed <SPEED>        [default: real] [possible values: real, max]
       --ring-cap <RING_CAP>  [default: 4096]
+      --sample-ms <SAMPLE_MS>  [default: 1000]
   -h, --help                 Print help
   -V, --version              Print version
 ```
@@ -98,6 +101,12 @@ Options:
 - Only version 2 manifests are accepted. Regenerate older datasets with the current mocker.
 
 - `--flush-ms` must be positive; `--ring-cap` accepts 1 to 65536 messages.
+
+- `--sample-ms` sets the CPU sampling interval in milliseconds and must be positive.
+
+- Worker threads are named `simrec-sim`, `simrec-rec`, and `simrec-sampler`, so their CPU usage can be told apart.
+
+- A CPU sampler failure never fails the capture.
 
 - Without `--flush-ms`, a batch is written every 100 ms or at 8192 ticks, whichever comes first.
 
@@ -115,6 +124,26 @@ Options:
 
 - Output directories must be new or empty. Nothing is removed automatically.
 
+- `cpu-samples.jsonl` is written in each backend folder for every backend, including `--noop`. It is not covered by the metrics completion marker, so it may be partial after a failed run.
+
+### cpu-samples.jsonl
+
+One compact JSON object per line, with a `kind` discriminator. All lines for one sample share the same `seq` and `ts_epoch_us`.
+
+```json
+{"kind":"thread","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"thread":"simrec-rec","user_ns":812000000,"system_ns":95000000,"cpu_pct":41.7,"sched_usage":40.3}
+{"kind":"process","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"user_ns":1020000000,"system_ns":140000000,"cpu_pct":48.2,"rss_bytes":38211584}
+{"kind":"error","seq":4,"ts_epoch_us":1792022404000000,"message":"proc_pidinfo failed: ..."}
+```
+
+- Every thread of the process is listed, not only the named ones, so the main thread and any SQLite threads are visible.
+
+- Unnamed threads use the label `tid-<n>`.
+
+- A UI can read the file line by line, `JSON.parse` each line, and switch on `kind`. A trailing partial line must be skipped.
+
+- Group by `thread` and plot `cpu_pct` against `ts_epoch_us`.
+
 ## Limitations
 
 - Completion markers and metrics show success, not crash durability.
@@ -122,6 +151,10 @@ Options:
 - Floating-point output is reproducible only on the same implementation, dependencies, and platform.
 
 - Cancellation cannot interrupt a blocked file read or recorder call.
+
+- CPU sampling is macOS only. Other platforms write one `error` line and sampling stops.
+
+- Activity after the last sample (up to one interval) is not captured.
 
 ## Status
 

@@ -286,7 +286,7 @@ mod tests {
         // -- Setup & Fixtures
         let directory = fixture_directory("test_mock_in_open_rejects_version_1")?;
         let manifest = serde_json::json!({
-            "version": 2,
+            "version": 1,
             "seed": 42,
             "rate_hz": 200,
             "channels": CHANNELS,
@@ -466,12 +466,13 @@ mod tests {
         let directory = parent.join(format!("{}-{unique}", std::process::id()));
         std::fs::create_dir(&directory)?;
         let manifest = serde_json::json!({
-            "version": 1,
+            "version": 2,
             "seed": 42,
             "rate_hz": 200,
             "channels": CHANNELS,
             "tick_count": 2,
-            "start_ns": 0,
+            "start_epoch_us": FIXTURE_START_US,
+            "tick_period_us": TICK_PERIOD_US,
             "bytes_per_tick": 20
         });
         std::fs::write(

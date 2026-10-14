@@ -8,6 +8,7 @@ mod test_cases {
 	use crate::sim::ReplaySpeed;
 	use crate::{mock_in, recorder, sim};
 	use std::sync::Arc;
+	use crate::sampler::{CpuSource, SamplerSetup, CPU_SAMPLES_FILE_NAME};
 
 	#[test]
 	fn test_main_prepare_output_new_and_empty() -> Result<()> {
@@ -80,6 +81,7 @@ mod test_cases {
 			Duration::from_secs(60),
 			Some(rec::MAX_BATCH_TICKS),
 			1,
+			None,
 		)?;
 
 		// -- Check
@@ -111,6 +113,7 @@ mod test_cases {
 			Duration::ZERO,
 			Some(rec::MAX_BATCH_TICKS),
 			1,
+			None,
 		);
 
 		// -- Check
@@ -141,6 +144,7 @@ mod test_cases {
 			Duration::from_secs(60),
 			Some(rec::MAX_BATCH_TICKS),
 			1,
+			None,
 		);
 
 		// -- Check
@@ -173,6 +177,7 @@ mod test_cases {
 			Duration::ZERO,
 			Some(rec::MAX_BATCH_TICKS),
 			1,
+			None,
 		);
 
 		// -- Check
@@ -206,6 +211,7 @@ mod test_cases {
 			Duration::from_millis(10),
 			Some(rec::MAX_BATCH_TICKS),
 			1,
+			None,
 		);
 
 		// -- Check
@@ -242,6 +248,7 @@ mod test_cases {
 			Duration::from_millis(10),
 			Some(rec::MAX_BATCH_TICKS),
 			1,
+			None,
 		);
 
 		// -- Check
@@ -308,6 +315,7 @@ mod test_cases {
 			Duration::from_millis(10),
 			Some(rec::MAX_BATCH_TICKS),
 			16,
+			None,
 		)?;
 		let bytes = fs::read(out.join("seg-000000.bin"))?;
 
@@ -338,6 +346,7 @@ mod test_cases {
 			Duration::from_millis(10),
 			Some(rec::MAX_BATCH_TICKS),
 			16,
+			None,
 		)?;
 		let connection = rusqlite::Connection::open(out.join("capture.sqlite"))?;
 		let (min_ts_us, max_ts_us, count): (i64, i64, i64) =
@@ -353,6 +362,99 @@ mod test_cases {
 			max_ts_us,
 			FIXTURE_START_US + (tick_count as i64 - 1) * mock_in::TICK_PERIOD_US
 		);
+		Ok(())
+	}
+
+	#[test]
+	fn test_main_replay_workers_sampler_error_keeps_capture() -> Result<()> {
+		// -- Setup & Fixtures
+		let tick_count = 20_000;
+		let input = fixture_input("test_main_replay_workers_sampler_error_keeps_capture", tick_count)?;
+		let out = fixture_directory("test_main_replay_workers_sampler_error_keeps_capture_out")?;
+		let samples_path = out.join(CPU_SAMPLES_FILE_NAME);
+		let sampler = SamplerSetup {
+			source: Box::new(FailingSource),
+			writer: Box::new(fs::File::create(&samples_path)?),
+			interval: Duration::from_millis(10),
+		};
+		let observed = Arc::new(std::sync::Mutex::new(Observed::default()));
+		let recorder = ObservingRecorder {
+			observed: Arc::clone(&observed),
+			failure: Failure::None,
+		};
+
+		// -- Exec
+		let (produced, recorded) = replay_workers(
+			input,
+			Box::new(recorder),
+			ReplaySpeed::Max,
+			Duration::from_secs(60),
+			Some(rec::MAX_BATCH_TICKS),
+			1,
+			Some(sampler),
+		)?;
+		let content = fs::read_to_string(&samples_path)?;
+
+		// -- Check
+		assert_eq!(produced.ticks_total, tick_count);
+		assert_eq!(recorded.ticks_total, tick_count);
+		let lines: Vec<&str> = content.lines().collect();
+		assert_eq!(lines.len(), 1);
+		let value: serde_json::Value = serde_json::from_str(lines[0])?;
+		assert_eq!(value["kind"], "error");
+		Ok(())
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn test_main_replay_workers_cpu_samples_written() -> Result<()> {
+		use crate::sampler::OsCpuSource;
+		use std::collections::HashSet;
+
+		// -- Setup & Fixtures
+		let input = fixture_input("test_main_replay_workers_cpu_samples_written", 100)?;
+		let out = fixture_directory("test_main_replay_workers_cpu_samples_written_out")?;
+		let samples_path = out.join(CPU_SAMPLES_FILE_NAME);
+		let sampler = SamplerSetup {
+			source: Box::new(OsCpuSource::current()),
+			writer: Box::new(fs::File::create(&samples_path)?),
+			interval: Duration::from_millis(50),
+		};
+
+		// -- Exec
+		replay_workers(
+			input,
+			Box::new(NoopRecorder),
+			ReplaySpeed::Realtime,
+			Duration::from_millis(10),
+			Some(rec::MAX_BATCH_TICKS),
+			16,
+			Some(sampler),
+		)?;
+		let content = fs::read_to_string(&samples_path)?;
+
+		// -- Check
+		let mut labels: HashSet<String> = HashSet::new();
+		let mut has_process = false;
+		for line in content.lines() {
+			let value: serde_json::Value = serde_json::from_str(line)?;
+			match value["kind"].as_str() {
+				Some("process") => has_process = true,
+				Some("thread") => {
+					let label = value["thread"].as_str().ok_or("thread line without label")?;
+					if labels.insert(label.to_string()) {
+						assert!(value["cpu_pct"].is_null(), "first sample of {label} must have null cpu_pct");
+					}
+					if let Some(cpu_pct) = value["cpu_pct"].as_f64() {
+						assert!(cpu_pct >= 0.0, "negative cpu_pct for {label}");
+					}
+				}
+				_ => {}
+			}
+		}
+		assert!(labels.contains("simrec-sim"));
+		assert!(labels.contains("simrec-rec"));
+		assert!(has_process);
 		Ok(())
 	}
 
@@ -407,6 +509,18 @@ mod test_cases {
 				.map_err(|_| Error::custom("observation lock poisoned"))?
 				.finished = true;
 			Ok(0)
+		}
+	}
+
+	struct FailingSource;
+
+	impl CpuSource for FailingSource {
+		fn threads(&mut self) -> lib_os::Result<Vec<lib_os::ThreadCpu>> {
+			Err(lib_os::Error::Unsupported)
+		}
+
+		fn process(&mut self) -> lib_os::Result<lib_os::ProcessStats> {
+			Err(lib_os::Error::Unsupported)
 		}
 	}
 

@@ -1,0 +1,18 @@
+[package]
+name = "lib-os"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# -- Others
+derive_more.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc.workspace = true

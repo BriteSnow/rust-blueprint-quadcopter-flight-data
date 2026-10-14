@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lib-common", "crates/mocker", "crates/simrec"]
+members = ["crates/lib-common", "crates/lib-os", "crates/mocker", "crates/simrec"]
 resolver = "3"
 
 [workspace.package]
@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 # -- Internal
 lib-common = { path = "crates/lib-common" }
+lib-os = { path = "crates/lib-os" }
 # -- Async / Event
 crossfire = "3.1.12"
 tokio = { version = "1", features = ["full"] }
@@ -24,6 +25,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rand = "0.8"
 rand_chacha = "0.3"
 derive_more = { version = "2", features = ["from", "display"] }
+libproc = "0.14"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

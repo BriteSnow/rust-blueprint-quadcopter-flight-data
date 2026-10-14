@@ -31,6 +31,7 @@ README.md               usage, formats, limitations, comparison procedure
 .gitignore              sandbox/
 crates/
   lib-common/           shared named bounded SPSC facade (event_base)
+  lib-os/               per-thread and process CPU and RSS sampling (macOS)
   mocker/               deterministic mock dataset generator
   simrec/               validated replay, pipeline, recorders, metrics
 sandbox/                generated mock datasets and captures (not versioned)
@@ -51,6 +52,16 @@ dev/                    project rules and specs
 - Backend handles and errors stay private.
 - Errors: `InvalidCapacity`, `TxDisconnected`, `RxDisconnected`, with `is_disconnected()`.
 - Provides `time::now() -> i64`, the current wall-clock time in epoch microseconds, saturating and negative before the epoch.
+
+## Crate: lib-os
+
+- Provides per-thread and process CPU time and RSS on macOS through the `libproc` crate (safe API over `proc_pidinfo`). The unsafe code stays inside the dependency.
+- `thread_cpu_all(pid) -> Result<Vec<ThreadCpu>>` lists the threads with `ListThreads`, then reads `ThreadInfo` for each. A thread that exits before it is read is skipped.
+- `process_stats(pid) -> Result<ProcessStats>` reads `TaskAllInfo`. The task CPU totals only include exited threads, so the live thread times are added.
+- `ThreadCpu` holds `thread_handle: u64` (kernel handle, stable while the thread lives), `name: String` (empty if unnamed), `user_ns`, `system_ns`, and `sched_usage: f32` (`pth_cpu_usage / 10.0`, percent of one core).
+- `ProcessStats` holds `user_ns`, `system_ns`, and `rss_bytes`.
+- CPU times are nanoseconds as reported by `libproc` on the target machine, with no timebase conversion.
+- Other targets return `Error::Unsupported`.
 
 ## Crate: mocker
 
@@ -150,6 +161,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 | `--flush-ms`  | `100`       | interval; 8192-tick size cap only if omitted |
 | `--speed`     | `real`      | `real` (deadline pacing) or `max`           |
 | `--ring-cap`  | `4096`      | ring capacity in messages, 1 to 65536       |
+| `--sample-ms` | `1000`      | CPU sampling interval in ms, positive       |
 
 - Exactly one backend flag is required.
 - `--duration` accepts `d<N>`, `h<N>`, or `m<N>` with N positive.
@@ -176,6 +188,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 - Consumer thread appends ticks to a batch and flushes when the interval elapses. Without `--flush-ms`, the interval is 100 ms and a batch is also flushed at 8192 ticks. With `--flush-ms`, there is no tick cap.
 - Final draining happens only after producer success is published and the ring is rechecked.
 - Both workers are joined before completion is reported.
+- Threads are named `simrec-sim` (producer), `simrec-rec` (consumer), and `simrec-sampler` (CPU sampler, when enabled).
 - Tick conservation is required: produced and recorded counts must equal the replayed tick count, which is the requested span in ticks.
 
 ### Recorder Trait
@@ -256,6 +269,43 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 | `finish_ms` | f64 | recorder finalization time in ms |
 | `output_bytes` | u64 | finalized output bytes, `0` for noop |
 
+### CPU Sampling
+
+- A sampler thread (`simrec-sampler`) starts after the sim and rec threads and stops after both are joined.
+- It never touches the ring, the recorder, the worker metrics, or the shared `cancelled` flag.
+- Every `--sample-ms`, it reads per-thread and process CPU through `lib-os`, writes one JSONL line per thread plus one process line, then flushes.
+- `cpu_pct` is the CPU-time delta over the monotonic interval, where 100.0 means one full core.
+- The first sample of each thread and of the process has `cpu_pct` null.
+- Threads are keyed by handle and label, so a reused handle does not inherit an old delta.
+- A sampler error never fails the capture. The sampler writes one `error` line, prints one warning to stderr, and stops.
+- If the sampler thread cannot start, the capture continues without sampling.
+- Output is `<out>/captured/<name>-<speed>/<backend>/cpu-samples.jsonl`, created with `create-new` before the replay starts, so a creation failure is a setup error.
+- The file is written for every backend, including `noop`, and is not covered by the metrics completion marker.
+- Activity after the last sample (up to one interval) is not captured.
+
+#### cpu-samples.jsonl schema
+
+One compact JSON object per line, with a `kind` discriminator. All lines for one sample share the same `seq` and `ts_epoch_us`.
+
+```json
+{"kind":"thread","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"thread":"simrec-rec","user_ns":812000000,"system_ns":95000000,"cpu_pct":41.7,"sched_usage":40.3}
+{"kind":"process","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"user_ns":1020000000,"system_ns":140000000,"cpu_pct":48.2,"rss_bytes":38211584}
+{"kind":"error","seq":4,"ts_epoch_us":1792022404000000,"message":"proc_pidinfo failed: ..."}
+```
+
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `kind` | string | `thread`, `process`, or `error` |
+| `seq` | u64 | sample number, starting at 0 |
+| `ts_epoch_us` | i64 | wall-clock epoch microseconds at the sample |
+| `interval_us` | u64 | monotonic time since the previous sample, `0` for the first |
+| `thread` | string | pthread name; unnamed threads use `tid-<n>` |
+| `user_ns`, `system_ns` | u64 | cumulative CPU time in nanoseconds |
+| `cpu_pct` | f64 or null | delta CPU over the interval, 100 = one core |
+| `sched_usage` | f32 | kernel decayed usage, thread lines only |
+| `rss_bytes` | u64 | process lines only |
+| `message` | string | error lines only |
+
 ## Conventions
 
 - One `Error` enum and `Result` alias per crate.
@@ -269,6 +319,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 
 - Done: workspace scaffold, streaming mocker, validated replay, no-op pipeline, raw recording, SQLite WAL recording, README documentation, epoch microsecond timestamps (manifest version 2).
 - Done: SQLite column renamed to `ts_epoch_micro`, tick field renamed to `epoch_micro`.
+- Done: CPU sampling on macOS through `lib-os`, with `cpu-samples.jsonl` output and `--sample-ms`. Tests were reported by the user as passing, not independently rerun.
 - Reported by the user as passing: `cargo build`, `cargo test`, and `cargo clippy`. Not independently rerun.
 - Pending: `cargo fmt --all -- --check`, dataset generation, short end-to-end replays, failure-shutdown runtime checks, and the comparison matrix with CPU and RSS measurements.
 - No benchmark results are claimed yet.
@@ -282,6 +333,8 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 - Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given.
 - Version 1 datasets and captures with the old `ts_us` column must be regenerated.
 - Large ring capacities can consume substantial memory.
+- Sampling is macOS only. Other platforms write one `error` line. Linux (`/proc/self/task/<tid>/stat`) is a later addition behind the same `lib-os` API.
+- Activity after the last sample (up to one interval) is not captured.
 
 ## Deferred and Later
 

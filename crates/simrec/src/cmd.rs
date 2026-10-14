@@ -34,6 +34,9 @@ pub struct CliCmd {
 
     #[arg(long, default_value_t = 4096, value_parser = ring_capacity)]
     pub ring_cap: usize,
+
+    #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..))]
+    pub sample_ms: u64,
 }
 
 // region:    --- Support
@@ -150,6 +153,7 @@ mod tests {
         assert_eq!(command.flush_ms, None);
         assert_eq!(command.speed, "real");
         assert_eq!(command.ring_cap, 4096);
+        assert_eq!(command.sample_ms, 1000);
         Ok(())
     }
 
@@ -183,6 +187,7 @@ mod tests {
             &["simrec", "--sql", "--raw"],
             &["simrec", "--noop", "--with-index"],
             &["simrec", "--noop", "--flush-ms", "0"],
+            &["simrec", "--noop", "--sample-ms", "0"],
             &["simrec", "--noop", "--ring-cap", "0"],
             &["simrec", "--noop", "--ring-cap", "65537"],
             &["simrec", "--noop", "--ring-cap", "invalid"],

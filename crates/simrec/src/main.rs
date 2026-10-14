@@ -12,6 +12,7 @@ mod rec_raw;
 #[path = "rec-sqlite.rs"]
 mod rec_sqlite;
 mod recorder;
+mod sampler;
 mod sim;
 mod support;
 

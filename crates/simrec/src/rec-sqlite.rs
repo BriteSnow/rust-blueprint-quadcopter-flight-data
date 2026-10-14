@@ -47,7 +47,9 @@ impl SqliteRecorder {
 		)?;
 
 		if with_index {
-			connection.execute_batch("CREATE INDEX idx_samples_accel_z ON samples (accel_z);")?;
+			for column in ["rotor_fl", "rotor_fr", "rotor_rl", "rotor_rr", "accel_z"] {
+				connection.execute_batch(&format!("CREATE INDEX idx_samples_{column} ON samples ({column});"))?;
+			}
 		}
 
 		Ok(Self {
@@ -258,17 +260,17 @@ mod tests {
 		Box::new(SqliteRecorder::new(&with_index, true)?).finish()?;
 
 		// -- Check
-		assert_eq!(count_accel_z_index(&without_index)?, 0);
-		assert_eq!(count_accel_z_index(&with_index)?, 1);
+		assert_eq!(count_sample_indexes(&without_index)?, 0);
+		assert_eq!(count_sample_indexes(&with_index)?, 5);
 		Ok(())
 	}
 
 	// -- Test Support
 
-	fn count_accel_z_index(directory: &SPath) -> Result<i64> {
+	fn count_sample_indexes(directory: &SPath) -> Result<i64> {
 		let connection = Connection::open(directory.join(DATABASE_FILENAME))?;
 		let count: i64 = connection.query_row(
-			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_samples_accel_z'",
+			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'samples'",
 			[],
 			|row| row.get(0),
 		)?;

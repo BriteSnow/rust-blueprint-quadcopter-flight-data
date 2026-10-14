@@ -5,10 +5,10 @@ mod test_cases {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use crate::app::*;
+	use crate::sampler::{CpuSource, SamplerSetup, CPU_SAMPLES_FILE_NAME};
 	use crate::sim::ReplaySpeed;
 	use crate::{mock_in, recorder, sim};
 	use std::sync::Arc;
-	use crate::sampler::{CpuSource, SamplerSetup, CPU_SAMPLES_FILE_NAME};
 
 	#[test]
 	fn test_main_prepare_output_new_and_empty() -> Result<()> {
@@ -349,10 +349,11 @@ mod test_cases {
 			None,
 		)?;
 		let connection = rusqlite::Connection::open(out.join("capture.sqlite"))?;
-		let (min_ts_us, max_ts_us, count): (i64, i64, i64) =
-			connection.query_row("SELECT MIN(ts_epoch_micro), MAX(ts_epoch_micro), COUNT(*) FROM samples", [], |row| {
-				Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-			})?;
+		let (min_ts_us, max_ts_us, count): (i64, i64, i64) = connection.query_row(
+			"SELECT MIN(ts_epoch_micro), MAX(ts_epoch_micro), COUNT(*) FROM samples",
+			[],
+			|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+		)?;
 
 		// -- Check
 		assert_eq!(recorded.ticks_total, tick_count);
@@ -443,7 +444,10 @@ mod test_cases {
 				Some("thread") => {
 					let label = value["thread"].as_str().ok_or("thread line without label")?;
 					if labels.insert(label.to_string()) {
-						assert!(value["cpu_pct"].is_null(), "first sample of {label} must have null cpu_pct");
+						assert!(
+							value["cpu_pct"].is_null(),
+							"first sample of {label} must have null cpu_pct"
+						);
 					}
 					if let Some(cpu_pct) = value["cpu_pct"].as_f64() {
 						assert!(cpu_pct >= 0.0, "negative cpu_pct for {label}");

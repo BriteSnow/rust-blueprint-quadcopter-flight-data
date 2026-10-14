@@ -1,7 +1,7 @@
 // region:    --- Modules
 
-mod cmd;
 mod app;
+mod cmd;
 mod error;
 mod metrics;
 #[path = "mock-in.rs"]
@@ -21,8 +21,8 @@ pub use error::{Error, Result};
 // endregion: --- Modules
 
 fn main() {
-    if let Err(error) = app::run() {
-        eprintln!("simrec: {error}");
-        std::process::exit(1);
-    }
+	if let Err(error) = app::run() {
+		eprintln!("simrec: {error}");
+		std::process::exit(1);
+	}
 }

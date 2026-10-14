@@ -1,9 +1,9 @@
 // region:    --- Modules
 
-mod error;
 mod cpu;
+mod error;
 
-pub use error::{Error, Result};
 pub use cpu::*;
+pub use error::{Error, Result};
 
 // endregion: --- Modules

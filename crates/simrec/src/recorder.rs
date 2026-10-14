@@ -3,7 +3,7 @@ use crate::Result;
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code, reason = "storage backends are not implemented yet")]
 pub struct Tick {
-    pub ts_ns: i64,
+    pub epoch_micro: i64,
     pub v: [f32; 5],
 }
 

@@ -9,7 +9,7 @@ use crate::{
 };
 
 const DATABASE_FILENAME: &str = "capture.sqlite";
-const INSERT_SQL: &str = "INSERT INTO samples (ts_ns, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+const INSERT_SQL: &str = "INSERT INTO samples (ts_epoch_micro, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 pub struct SqliteRecorder {
     connection: Option<Connection>,
@@ -46,7 +46,7 @@ impl SqliteRecorder {
 
         connection.execute_batch(
             "CREATE TABLE samples (
-                ts_ns INTEGER PRIMARY KEY,
+                ts_epoch_micro INTEGER PRIMARY KEY,
                 rotor_fl REAL,
                 rotor_fr REAL,
                 rotor_rl REAL,
@@ -113,7 +113,7 @@ impl Recorder for SqliteRecorder {
             let mut statement = transaction.prepare_cached(INSERT_SQL)?;
             for tick in ticks {
                 statement.execute(params![
-                    tick.ts_ns,
+                    tick.epoch_micro,
                     f64::from(tick.v[0]),
                     f64::from(tick.v[1]),
                     f64::from(tick.v[2]),
@@ -154,11 +154,11 @@ mod tests {
         let directory = fixture_directory("test_rec_sqlite_write_batch_and_finish")?;
         let ticks = [
             Tick {
-                ts_ns: 0,
+                epoch_micro: 0,
                 v: [1.0, 2.0, 3.0, 4.0, 9.81],
             },
             Tick {
-                ts_ns: 5_000_000,
+                epoch_micro: 5_000,
                 v: [-1.0, -2.0, -3.0, -4.0, 8.5],
             },
         ];
@@ -187,8 +187,8 @@ mod tests {
 
         for tick in ticks {
             let stored: (i64, f64, f64, f64, f64, f64) = connection.query_row(
-                "SELECT ts_ns, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z FROM samples WHERE ts_ns = ?1",
-                [tick.ts_ns],
+                "SELECT ts_epoch_micro, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z FROM samples WHERE ts_epoch_micro = ?1",
+                [tick.epoch_micro],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -200,7 +200,7 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(stored.0, tick.ts_ns);
+            assert_eq!(stored.0, tick.epoch_micro);
             assert_eq!(
                 [
                     stored.1 as f32,
@@ -223,11 +223,11 @@ mod tests {
             fixture_directory("test_rec_sqlite_batch_failure_rolls_back_transaction")?;
         let duplicate_ticks = [
             Tick {
-                ts_ns: 0,
+                epoch_micro: 0,
                 v: [1.0; 5],
             },
             Tick {
-                ts_ns: 0,
+                epoch_micro: 0,
                 v: [2.0; 5],
             },
         ];

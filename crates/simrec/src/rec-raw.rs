@@ -47,7 +47,7 @@ impl Recorder for RawRecorder {
                 .checked_add(1)
                 .ok_or_else(|| Error::custom("raw recording tick count overflow"))?;
             let mut record = [0_u8; RECORD_BYTES];
-            record[..8].copy_from_slice(&tick.ts_ns.to_le_bytes());
+            record[..8].copy_from_slice(&tick.epoch_micro.to_le_bytes());
             for (index, value) in tick.v.iter().enumerate() {
                 let start = 8 + index * 4;
                 record[start..start + 4].copy_from_slice(&value.to_le_bytes());
@@ -117,10 +117,10 @@ mod tests {
         // -- Setup & Fixtures
         let directory = fixture_directory("test_rec_raw_write_little_endian_record_simple")?;
         let tick = Tick {
-            ts_ns: -5,
+            epoch_micro: -5,
             v: [1.0, -2.0, 3.5, 4.0, 9.81],
         };
-        let mut expected = tick.ts_ns.to_le_bytes().to_vec();
+        let mut expected = tick.epoch_micro.to_le_bytes().to_vec();
         for value in tick.v {
             expected.extend_from_slice(&value.to_le_bytes());
         }
@@ -142,7 +142,7 @@ mod tests {
         // -- Setup & Fixtures
         let directory = fixture_directory("test_rec_raw_rolls_segment_inside_batch")?;
         let tick = Tick {
-            ts_ns: 0,
+            epoch_micro: 0,
             v: [1.0; 5],
         };
         let mut recorder = RawRecorder::new(&directory);

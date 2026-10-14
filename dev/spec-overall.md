@@ -20,7 +20,8 @@ Five channels are sampled together at 200 Hz, one tick every 5 ms.
 | 4 | accel_z  | m/s2 | vertical acceleration, about 9.81 at hover  |
 
 - A tick is `[f32; 5]` in little-endian order, 20 bytes.
-- Timestamps are implicit in the mock input: `ts_ns = i * 5_000_000` with origin 0.
+- Timestamps are wall-clock epoch microseconds, implicit in the mock input: `ts_us = start_epoch_us + i * tick_period_us`, with `tick_period_us = 5000`.
+- `start_epoch_us` is captured once by the mocker at generation time (never per tick), or set with `--start-us`, and recorded in `manifest.json`.
 
 ## Workspace
 
@@ -49,8 +50,11 @@ dev/                    project rules and specs
 - `try_recv` drains queued messages before reporting sender disconnection.
 - Backend handles and errors stay private.
 - Errors: `InvalidCapacity`, `TxDisconnected`, `RxDisconnected`, with `is_disconnected()`.
+- Provides `time::now() -> i64`, the current wall-clock time in epoch microseconds, saturating and negative before the epoch.
 
 ## Crate: mocker
+
+- Depends on `lib-common` for `time::now()`, called once per generation.
 
 ### CLI
 
@@ -58,6 +62,7 @@ dev/                    project rules and specs
 | ------------ | ----------- | ------------------------------------------ |
 | `--duration` | `d1`        | `d<N>`, `h<N>`, or `m<N>`, N positive      |
 | `--seed`     | `42`        | reproducible for the same build            |
+| `--start-us` | now         | epoch microseconds start, positive         |
 | `--out`      | `sandbox`   | dataset in `<out>/mock-data/<name>`        |
 | `--rate-hz`  | `200`       | only `200` is accepted                     |
 
@@ -65,8 +70,10 @@ dev/                    project rules and specs
 
 - `ticks.bin`: headerless little-endian `[f32; 5]` records, 20 bytes per tick.
 - `story.jsonl`: contiguous half-open `[start_tick, end_tick)` maneuver segments with `maneuver` and `intensity`.
-- `manifest.json`: version 1 completion record, schema below.
+- `manifest.json`: version 2 completion record, schema below.
 - The manifest is written last and is the completion marker.
+- `ticks.bin` and `story.jsonl` carry no timestamps; tick timestamps follow the manifest rule.
+- Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given. The tick data is still identical.
 
 #### story.jsonl schema
 
@@ -87,7 +94,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "seed": 42,
   "rate_hz": 200,
   "channels": [
@@ -98,18 +105,21 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
     "accel_z"
   ],
   "tick_count": 17280000,
-  "start_ns": 0,
+  "start_epoch_us": 1792022400000000,
+  "tick_period_us": 5000,
   "bytes_per_tick": 20
 }
 ```
 
-- `version`: `u32`, currently `1`.
+- `version`: `u32`, currently `2`.
 - `seed`: `u64`, the generator seed.
 - `rate_hz`: `u32`, always `200`.
 - `channels`: array of five strings in tick order.
 - `tick_count`: `u64`, total ticks. `ticks.bin` must be exactly `tick_count * 20` bytes.
-- `start_ns`: `i64`, always `0`.
+- `start_epoch_us`: `i64`, positive, epoch microseconds of the first tick, captured once at generation or set by `--start-us`.
+- `tick_period_us`: `i64`, always `5000`.
 - `bytes_per_tick`: `usize`, always `20`.
+- Tick timestamp rule: `ts_us = start_epoch_us + i * tick_period_us`. `start_epoch_us + tick_count * tick_period_us` must fit in `i64`.
 
 ### Synthesis
 
@@ -124,6 +134,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 - Data files are flushed and synchronized before the manifest is published.
 - The manifest is published with a non-overwriting hard link, so hard-link support is required.
 - A failure before publication leaves partial output without `manifest.json`.
+- Start and end timestamps are validated before any output file is created.
 
 ## Crate: simrec
 
@@ -148,8 +159,9 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 
 ### Startup Validation
 
-- Manifest version 1, channel order, 200 Hz, 20-byte records, positive tick count.
-- Checked payload size and signed nanosecond timestamp range.
+- Manifest version 2, channel order, 200 Hz, 20-byte records, 5000 us tick period, positive tick count.
+- Version 1 manifests are rejected with an error asking to regenerate the dataset.
+- Checked payload size. `start_epoch_us` must be positive, and `start_epoch_us + tick_count * tick_period_us` must fit in `i64` (checked arithmetic).
 - `ticks.bin` size must equal `tick_count * 20` exactly.
 - `manifest.json`, `ticks.bin`, and `story.jsonl` must be regular files. The story is not parsed.
 
@@ -158,6 +170,7 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 - Producer thread reads `ticks.bin` through a bounded buffered reader and decodes little-endian floats.
 - Non-finite values, premature EOF, and trailing bytes fail replay.
 - Realtime pacing uses deadlines anchored to a monotonic start, so backpressure creates lateness rather than timestamp drift.
+- Tick timestamps (`epoch_micro`) are computed from the manifest rule, never from the wall clock. Pacing and data timestamps stay separate.
 - Ticks travel in `Vec<Tick>` messages of at most 1024 ticks.
 - A full ring keeps pending ticks in the producer. Stalls are counted. Input pauses when pending reaches 1024 ticks.
 - Consumer thread appends ticks to a batch and flushes when the interval elapses. Without `--flush-ms`, the interval is 100 ms and a batch is also flushed at 8192 ticks. With `--flush-ms`, there is no tick cap.
@@ -173,8 +186,8 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `sandbox/captured/<name>-<speed>/sqlite-no-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-with-index/capture.sqlite` (the index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_ns` as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the with-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
-- Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 28 bytes: `i64` timestamp followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
+- SQLite: `sandbox/captured/<name>-<speed>/sqlite-no-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-with-index/capture.sqlite` (the index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and five `REAL` channels, plus secondary index `idx_samples_accel_z` on `accel_z` in the with-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 28 bytes: little-endian `i64` `ts_us` (epoch microseconds) followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling
 
@@ -254,7 +267,8 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 
 ## Status
 
-- Done: workspace scaffold, streaming mocker, validated replay, no-op pipeline, raw recording, SQLite WAL recording, README documentation.
+- Done: workspace scaffold, streaming mocker, validated replay, no-op pipeline, raw recording, SQLite WAL recording, README documentation, epoch microsecond timestamps (manifest version 2).
+- Done: SQLite column renamed to `ts_epoch_micro`, tick field renamed to `epoch_micro`.
 - Reported by the user as passing: `cargo build`, `cargo test`, and `cargo clippy`. Not independently rerun.
 - Pending: `cargo fmt --all -- --check`, dataset generation, short end-to-end replays, failure-shutdown runtime checks, and the comparison matrix with CPU and RSS measurements.
 - No benchmark results are claimed yet.
@@ -265,6 +279,8 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 - Raw and SQLite outputs are not crash-safe. `synchronous=NORMAL` can lose the latest commits after power failure.
 - Input files must not change during replay.
 - Floating-point output is reproducible only on the same implementation, dependency set, and platform.
+- Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given.
+- Version 1 datasets and captures with the old `ts_us` column must be regenerated.
 - Large ring capacities can consume substantial memory.
 
 ## Deferred and Later

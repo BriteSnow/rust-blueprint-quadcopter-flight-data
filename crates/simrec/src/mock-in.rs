@@ -17,7 +17,9 @@ pub struct MockInput {
 }
 
 pub const TICK_NS: u64 = 5_000_000;
+pub const TICK_PERIOD_US: i64 = 5_000;
 pub const BYTES_PER_TICK: u64 = 20;
+const MANIFEST_VERSION: u32 = 2;
 const CHANNELS: [&str; 5] = [
     "rotor_fl",
     "rotor_fr",
@@ -35,7 +37,7 @@ impl MockInput {
         if !manifest_file.metadata()?.is_file() {
             return Err(Error::custom("manifest.json must be a regular file"));
         }
-        let manifest: Manifest = serde_json::from_reader(BufReader::new(manifest_file))?;
+        let manifest = parse_manifest(&std::io::read_to_string(manifest_file)?)?;
         let ticks_path = directory.join("ticks.bin");
         let ticks = File::open(&ticks_path).map_err(|error| {
             Error::custom(format!("cannot open {ticks_path}: {error}"))
@@ -109,22 +111,48 @@ impl MockInput {
 // region:    --- Support
 
 #[derive(Deserialize)]
+struct ManifestVersion {
+    version: u32,
+}
+
+#[derive(Deserialize)]
 struct Manifest {
     version: u32,
     seed: u64,
     rate_hz: u32,
     channels: Vec<String>,
     tick_count: u64,
-    start_ns: i64,
+    start_epoch_us: i64,
+    tick_period_us: i64,
     bytes_per_tick: u64,
 }
 
-fn validate_manifest(manifest: &Manifest, actual_bytes: u64) -> Result<()> {
-    if manifest.version != 1 {
-        return Err(Error::custom("only manifest version 1 is supported"));
+fn parse_manifest(content: &str) -> Result<Manifest> {
+    // Probe the version first so older schemas fail with a clear message.
+    let probe: ManifestVersion = serde_json::from_str(content)?;
+    if probe.version != MANIFEST_VERSION {
+        return Err(unsupported_version(probe.version));
     }
-    if manifest.rate_hz != 200 || manifest.bytes_per_tick != BYTES_PER_TICK {
-        return Err(Error::custom("input must contain 200 Hz, 20-byte ticks"));
+    Ok(serde_json::from_str(content)?)
+}
+
+fn unsupported_version(version: u32) -> Error {
+    Error::custom(format!(
+        "manifest version {version} is not supported; expected version {MANIFEST_VERSION}, regenerate the dataset with the current mocker"
+    ))
+}
+
+fn validate_manifest(manifest: &Manifest, actual_bytes: u64) -> Result<()> {
+    if manifest.version != MANIFEST_VERSION {
+        return Err(unsupported_version(manifest.version));
+    }
+    if manifest.rate_hz != 200
+        || manifest.bytes_per_tick != BYTES_PER_TICK
+        || manifest.tick_period_us != TICK_PERIOD_US
+    {
+        return Err(Error::custom(
+            "input must contain 200 Hz, 20-byte ticks with a 5000 us tick period",
+        ));
     }
     if manifest.channels.len() != CHANNELS.len()
         || !manifest
@@ -147,18 +175,26 @@ fn validate_manifest(manifest: &Manifest, actual_bytes: u64) -> Result<()> {
             "ticks.bin size mismatch: expected {expected_bytes}, found {actual_bytes}"
         )));
     }
-    timestamp(manifest, manifest.tick_count - 1)?;
+    if manifest.start_epoch_us <= 0 {
+        return Err(Error::custom("manifest start_epoch_us must be positive"));
+    }
+    i64::try_from(manifest.tick_count)
+        .ok()
+        .and_then(|ticks| ticks.checked_mul(manifest.tick_period_us))
+        .and_then(|span| manifest.start_epoch_us.checked_add(span))
+        .ok_or("manifest timestamps exceed the signed 64-bit microsecond range")?;
     let _ = manifest.seed;
     Ok(())
 }
 
 fn timestamp(manifest: &Manifest, index: u64) -> Result<i64> {
-    let timestamp = i128::from(manifest.start_ns) + i128::from(index) * i128::from(TICK_NS);
+    let timestamp = i128::from(manifest.start_epoch_us)
+        + i128::from(index) * i128::from(manifest.tick_period_us);
     i64::try_from(timestamp)
         .map_err(|_| Error::custom("manifest timestamps exceed the signed 64-bit range"))
 }
 
-fn decode_tick(bytes: &[u8; 20], ts_ns: i64) -> Result<Tick> {
+fn decode_tick(bytes: &[u8; 20], ts_us: i64) -> Result<Tick> {
     let mut values = [0.0_f32; 5];
     for (index, value) in values.iter_mut().enumerate() {
         let start = index * 4;
@@ -170,11 +206,11 @@ fn decode_tick(bytes: &[u8; 20], ts_ns: i64) -> Result<Tick> {
         ]);
         if !value.is_finite() {
             return Err(Error::custom(format!(
-                "non-finite sensor value at timestamp {ts_ns}, channel {index}"
+                "non-finite sensor value at timestamp {ts_us}, channel {index}"
             )));
         }
     }
-    Ok(Tick { ts_ns, v: values })
+    Ok(Tick { epoch_micro: ts_us, v: values })
 }
 
 // endregion: --- Support
@@ -197,7 +233,7 @@ mod tests {
         let last = timestamp(&manifest, 1)?;
 
         // -- Check
-        assert_eq!(last, 5_000_000);
+        assert_eq!(last, FIXTURE_START_US + TICK_PERIOD_US);
         Ok(())
     }
 
@@ -211,11 +247,67 @@ mod tests {
         manifest.channels.swap(0, 1);
         assert!(validate_manifest(&manifest, 40).is_err());
         manifest.channels.swap(0, 1);
-        manifest.start_ns = i64::MAX;
+        manifest.start_epoch_us = i64::MAX;
         assert!(validate_manifest(&manifest, 40).is_err());
-        manifest.start_ns = 0;
+        manifest.start_epoch_us = 0;
+        assert!(validate_manifest(&manifest, 40).is_err());
+        manifest.start_epoch_us = FIXTURE_START_US;
+        manifest.tick_period_us = 1_000;
+        assert!(validate_manifest(&manifest, 40).is_err());
+        manifest.tick_period_us = TICK_PERIOD_US;
         manifest.tick_count = 0;
         assert!(validate_manifest(&manifest, 0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_mock_in_validate_manifest_timestamp_overflow() -> Result<()> {
+        // -- Setup & Fixtures
+        let mut overflowing = fixture_manifest();
+        overflowing.start_epoch_us = i64::MAX - TICK_PERIOD_US;
+        let mut boundary = fixture_manifest();
+        boundary.start_epoch_us = i64::MAX - 2 * TICK_PERIOD_US;
+
+        // -- Exec
+        let overflow_result = validate_manifest(&overflowing, 40);
+        let boundary_result = validate_manifest(&boundary, 40);
+
+        // -- Check
+        let error = overflow_result
+            .err()
+            .ok_or("expected timestamp overflow rejection")?;
+        assert!(error.to_string().contains("signed 64-bit"));
+        assert!(boundary_result.is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_mock_in_open_rejects_version_1() -> Result<()> {
+        // -- Setup & Fixtures
+        let directory = fixture_directory("test_mock_in_open_rejects_version_1")?;
+        let manifest = serde_json::json!({
+            "version": 2,
+            "seed": 42,
+            "rate_hz": 200,
+            "channels": CHANNELS,
+            "tick_count": 2,
+            "start_epoch_us": FIXTURE_START_US,
+            "tick_period_us": TICK_PERIOD_US,
+            "bytes_per_tick": 20
+        });
+        std::fs::write(
+            directory.join("manifest.json"),
+            serde_json::to_vec(&manifest)?,
+        )?;
+
+        // -- Exec
+        let result = MockInput::open(&directory);
+
+        // -- Check
+        let error = result.err().ok_or("expected version 1 rejection")?;
+        let message = error.to_string();
+        assert!(message.contains("manifest version 1 is not supported"));
+        assert!(message.contains("regenerate"));
         Ok(())
     }
 
@@ -232,7 +324,7 @@ mod tests {
         let tick = decode_tick(&bytes, 123)?;
 
         // -- Check
-        assert_eq!(tick.ts_ns, 123);
+        assert_eq!(tick.epoch_micro, 123);
         assert_eq!(tick.v, values);
         Ok(())
     }
@@ -269,9 +361,9 @@ mod tests {
 
         // -- Check
         assert_eq!(input.tick_count(), 2);
-        assert_eq!(first.ts_ns, 0);
+        assert_eq!(first.epoch_micro, FIXTURE_START_US);
         assert_eq!(first.v, [1.0_f32, 2.0, 3.0, 4.0, 9.81]);
-        assert_eq!(second.ts_ns, 5_000_000);
+        assert_eq!(second.epoch_micro, FIXTURE_START_US + TICK_PERIOD_US);
         assert_eq!(second.v, [5.0_f32; 5]);
         assert!(end.is_none());
         Ok(())
@@ -362,6 +454,9 @@ mod tests {
     }
 
     // -- Test Support
+
+    const FIXTURE_START_US: i64 = 1_792_022_400_000_000;
+
     fn fixture_directory(test_name: &str) -> Result<SPath> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -396,12 +491,13 @@ mod tests {
 
     fn fixture_manifest() -> Manifest {
         Manifest {
-            version: 1,
+            version: MANIFEST_VERSION,
             seed: 42,
             rate_hz: 200,
             channels: CHANNELS.map(str::to_string).into(),
             tick_count: 2,
-            start_ns: 0,
+            start_epoch_us: FIXTURE_START_US,
+            tick_period_us: TICK_PERIOD_US,
             bytes_per_tick: 20,
         }
     }

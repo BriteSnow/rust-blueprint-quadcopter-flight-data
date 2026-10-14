@@ -31,6 +31,7 @@ Usage: mocker [OPTIONS]
 Options:
       --duration <DURATION>  [default: d1]
       --seed <SEED>          [default: 42]
+      --start-us <START_US>
   -o, --out <OUT>            [default: sandbox]
       --rate-hz <RATE_HZ>    [default: 200]
   -h, --help                 Print help
@@ -42,14 +43,22 @@ Options:
 
 - `--rate-hz` accepts only `200`.
 
+- `--start-us` sets the dataset start in epoch microseconds (positive). Without it, the current time is captured once at generation start.
+
+- `manifest.json` is version 2 and records `start_epoch_us` and `tick_period_us` (5000). Tick timestamps follow `ts_us = start_epoch_us + i * tick_period_us`.
+
+- Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given. The tick data is still identical.
+
 ## simrec
 
 Replays a mock dataset through the capture pipeline into exactly one backend.
 
 ```sh
 cargo run --release -p simrec -- --noop --duration d1 --speed max
+
 cargo run --release -p simrec -- --raw --duration d1 --speed max
 cargo run --release -p simrec -- --sql --duration d1 --speed max
+cargo run --release -p simrec -- --sql --duration d1 --speed max --with-index
 
 # real mode (just 1 minute window, put m5, m10, or m30 to have bigger capture window)
 cargo run --release -p simrec -- --raw --duration m1 --speed real
@@ -86,6 +95,8 @@ Options:
 
 - `--noop` is a pipeline diagnostic and writes no recording.
 
+- Only version 2 manifests are accepted. Regenerate older datasets with the current mocker.
+
 - `--flush-ms` must be positive; `--ring-cap` accepts 1 to 65536 messages.
 
 - Without `--flush-ms`, a batch is written every 100 ms or at 8192 ticks, whichever comes first.
@@ -97,6 +108,10 @@ Options:
 - Recordings go to `<out>/captured/<name>-<speed>/<backend>/`, such as `sandbox/captured/d001-max/sqlite-no-index/capture.sqlite`, `sandbox/captured/d001-real/sqlite-with-index/capture.sqlite`, or `sandbox/captured/d001-max/raw/seg-000000.bin`.
 
 - `capture-metrics.json` is published in each backend folder only after successful replay and tick conservation.
+
+- Raw records are 28 bytes: little-endian `i64` `ts_us` (epoch microseconds) followed by five `f32` values.
+
+- SQLite table `samples` uses `ts_epoch_micro` (epoch microseconds) as its primary key.
 
 - Output directories must be new or empty. Nothing is removed automatically.
 

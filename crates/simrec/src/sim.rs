@@ -109,7 +109,7 @@ mod tests {
         // -- Setup & Fixtures
         let (mut producer, mut consumer) = new_spsc_bounded("sim-test", 1)?;
         let tick = Tick {
-            ts_ns: 0,
+            epoch_micro: 0,
             v: [1.0; 5],
         };
         let mut stats = ProducerStats::default();

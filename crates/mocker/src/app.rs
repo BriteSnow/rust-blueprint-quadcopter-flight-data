@@ -1,4 +1,5 @@
 use clap::Parser;
+use lib_common::time;
 use simple_fs::SPath;
 
 use crate::{
@@ -13,6 +14,8 @@ struct Args {
     duration: String,
     #[arg(long, default_value_t = 42)]
     seed: u64,
+    #[arg(long)]
+    start_us: Option<i64>,
     #[arg(short, long, default_value = "sandbox", value_parser = sensor_path)]
     out: SPath,
     #[arg(long, default_value_t = RATE_HZ)]
@@ -28,9 +31,10 @@ pub(super) fn run() -> Result<()> {
     }
     let tick_count = duration_ticks(&args.duration)?;
     let out = args.out.join("mock-data").join(duration_name(&args.duration)?);
-    writer::generate(&out, args.seed, tick_count)?;
+    let start_epoch_us = resolve_start_us(args.start_us);
+    writer::generate(&out, args.seed, tick_count, start_epoch_us)?;
     eprintln!(
-        "Generated {tick_count} ticks in {} (seed {}).",
+        "Generated {tick_count} ticks in {} (seed {}, start {start_epoch_us} us).",
         out,
         args.seed
     );
@@ -38,6 +42,11 @@ pub(super) fn run() -> Result<()> {
 }
 
 // region:    --- Support
+
+/// Uses the explicit start when given, otherwise captures the current epoch once.
+fn resolve_start_us(start_us: Option<i64>) -> i64 {
+    start_us.unwrap_or_else(time::now)
+}
 
 fn sensor_path(value: &str) -> core::result::Result<SPath, String> {
     if value.is_empty() {
@@ -209,6 +218,61 @@ mod tests {
         assert!(last_ns <= i64::MAX as u64);
         assert!(duration_ticks("d106752").is_err());
         Ok(())
+    }
+
+    #[test]
+    fn test_main_args_start_us() -> Result<()> {
+        // -- Setup & Fixtures
+        let custom_arguments = ["mocker", "--start-us", "1000"];
+
+        // -- Exec
+        let defaults = Args::try_parse_from(["mocker"])?;
+        let custom = Args::try_parse_from(custom_arguments)?;
+
+        // -- Check
+        assert_eq!(defaults.start_us, None);
+        assert_eq!(custom.start_us, Some(1_000));
+        assert_eq!(resolve_start_us(custom.start_us), 1_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_main_resolve_start_us_default_now() -> Result<()> {
+        // -- Setup & Fixtures
+        let out = fixture_directory("test_main_resolve_start_us_default_now")?.join("dataset");
+        let before = epoch_us()?;
+
+        // -- Exec
+        writer::generate(&out, 42, 200, resolve_start_us(None))?;
+        let after = epoch_us()?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("manifest.json"))?)?;
+
+        // -- Check
+        let start = manifest["start_epoch_us"]
+            .as_i64()
+            .ok_or("start_epoch_us should be an i64")?;
+        assert!(start >= before - 5_000_000);
+        assert!(start <= after + 5_000_000);
+        Ok(())
+    }
+
+    // -- Test Support
+
+    fn epoch_us() -> Result<i64> {
+        let elapsed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+        Ok(i64::try_from(elapsed.as_micros())?)
+    }
+
+    fn fixture_directory(test_name: &str) -> Result<SPath> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let parent = SPath::new("tests-data/.tmp").join(test_name);
+        std::fs::create_dir_all(&parent)?;
+        let directory = parent.join(format!("{}-{unique}", std::process::id()));
+        std::fs::create_dir(&directory)?;
+        Ok(directory)
     }
 }
 

@@ -15,6 +15,8 @@ use crate::{
 
 const CHUNK_TICKS: usize = RATE_HZ as usize;
 const HOUR_TICKS: u64 = 3_600 * RATE_HZ as u64;
+const MANIFEST_VERSION: u32 = 2;
+const TICK_PERIOD_US: i64 = 5_000;
 
 #[derive(Serialize)]
 struct Manifest {
@@ -23,7 +25,8 @@ struct Manifest {
     rate_hz: u32,
     channels: [&'static str; 5],
     tick_count: u64,
-    start_ns: i64,
+    start_epoch_us: i64,
+    tick_period_us: i64,
     bytes_per_tick: usize,
 }
 
@@ -31,7 +34,8 @@ fn create_new(path: &SPath) -> Result<File> {
     Ok(OpenOptions::new().write(true).create_new(true).open(path)?)
 }
 
-pub fn generate(out: &SPath, seed: u64, tick_count: u64) -> Result<()> {
+pub fn generate(out: &SPath, seed: u64, tick_count: u64, start_epoch_us: i64) -> Result<()> {
+    check_timestamp_range(start_epoch_us, tick_count)?;
     fs::create_dir_all(out)?;
     if fs::read_dir(out)?.next().transpose()?.is_some() {
         return Err(Error::Invalid(format!(
@@ -85,12 +89,13 @@ pub fn generate(out: &SPath, seed: u64, tick_count: u64) -> Result<()> {
     drop(story_output);
 
     let manifest = Manifest {
-        version: 1,
+        version: MANIFEST_VERSION,
         seed,
         rate_hz: RATE_HZ,
         channels: CHANNELS,
         tick_count,
-        start_ns: 0,
+        start_epoch_us,
+        tick_period_us: TICK_PERIOD_US,
         bytes_per_tick: BYTES_PER_TICK,
     };
     let temporary_path = out.join(".manifest.json.tmp");
@@ -110,3 +115,89 @@ pub fn generate(out: &SPath, seed: u64, tick_count: u64) -> Result<()> {
     }
     Ok(())
 }
+
+// region:    --- Support
+
+fn check_timestamp_range(start_epoch_us: i64, tick_count: u64) -> Result<()> {
+    if start_epoch_us <= 0 {
+        return Err(Error::Invalid(format!(
+            "start epoch {start_epoch_us} us must be positive"
+        )));
+    }
+    i64::try_from(tick_count)
+        .ok()
+        .and_then(|ticks| ticks.checked_mul(TICK_PERIOD_US))
+        .and_then(|span| start_epoch_us.checked_add(span))
+        .ok_or_else(|| {
+            Error::Invalid("dataset timestamps exceed the signed 64-bit microsecond range".into())
+        })?;
+    Ok(())
+}
+
+// endregion: --- Support
+
+// region:    --- Tests
+
+#[cfg(test)]
+mod tests {
+    type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
+
+    use super::*;
+
+    #[test]
+    fn test_writer_generate_manifest_start_us() -> Result<()> {
+        // -- Setup & Fixtures
+        let out = fixture_directory("test_writer_generate_manifest_start_us")?.join("dataset");
+        let tick_count = 2_000_u64;
+
+        // -- Exec
+        generate(&out, 42, tick_count, 1_000)?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("manifest.json"))?)?;
+
+        // -- Check
+        assert_eq!(manifest["version"], 2);
+        assert_eq!(manifest["start_epoch_us"], 1_000);
+        assert_eq!(manifest["tick_period_us"], 5_000);
+        assert_eq!(manifest["tick_count"], tick_count);
+        assert!(manifest.get("start_ns").is_none());
+        assert_eq!(
+            fs::metadata(out.join("ticks.bin"))?.len(),
+            tick_count * BYTES_PER_TICK as u64
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_writer_generate_invalid_start_us() -> Result<()> {
+        // -- Setup & Fixtures
+        let parent = fixture_directory("test_writer_generate_invalid_start_us")?;
+        let cases = [0_i64, -1, i64::MAX - TICK_PERIOD_US];
+
+        // -- Exec & Check
+        for (index, start_epoch_us) in cases.into_iter().enumerate() {
+            let out = parent.join(format!("dataset-{index}"));
+            assert!(
+                generate(&out, 42, 2, start_epoch_us).is_err(),
+                "start epoch must be rejected: {start_epoch_us}"
+            );
+            assert!(fs::metadata(&out).is_err(), "rejected dataset must not create {out}");
+        }
+        Ok(())
+    }
+
+    // -- Test Support
+
+    fn fixture_directory(test_name: &str) -> Result<SPath> {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let parent = SPath::new("tests-data/.tmp").join(test_name);
+        fs::create_dir_all(&parent)?;
+        let directory = parent.join(format!("{}-{unique}", std::process::id()));
+        fs::create_dir(&directory)?;
+        Ok(directory)
+    }
+}
+
+// endregion: --- Tests

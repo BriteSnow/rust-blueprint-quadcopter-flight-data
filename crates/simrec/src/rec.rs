@@ -147,8 +147,8 @@ mod tests {
         // -- Setup & Fixtures
         let (mut producer, consumer) = new_spsc_bounded("rec-final-drain", 1)?;
         let ticks = vec![
-            Tick { ts_ns: 0, v: [0.0; 5] },
-            Tick { ts_ns: 5_000_000, v: [1.0; 5] },
+            Tick { epoch_micro: 0, v: [0.0; 5] },
+            Tick { epoch_micro: 5_000, v: [1.0; 5] },
         ];
         queue_ticks(&mut producer, ticks)?;
         let producer_done = AtomicBool::new(true);
@@ -196,7 +196,7 @@ mod tests {
     fn test_rec_consume_batch_limit() -> Result<()> {
         // -- Setup & Fixtures
         let (mut producer, consumer) = new_spsc_bounded("rec-batch-limit", 9)?;
-        let tick = Tick { ts_ns: 0, v: [1.0; 5] };
+        let tick = Tick { epoch_micro: 0, v: [1.0; 5] };
         for _ in 0..8 {
             queue_ticks(&mut producer, vec![tick; crate::sim::MAX_PENDING_TICKS])?;
         }
@@ -232,7 +232,7 @@ mod tests {
     fn test_rec_consume_age_only_no_size_flush() -> Result<()> {
         // -- Setup & Fixtures
         let (mut producer, consumer) = new_spsc_bounded("rec-age-only", 1)?;
-        let tick = Tick { ts_ns: 0, v: [1.0; 5] };
+        let tick = Tick { epoch_micro: 0, v: [1.0; 5] };
         queue_ticks(&mut producer, vec![tick; MAX_BATCH_TICKS + 1])?;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorder = TestRecorder {
@@ -265,7 +265,7 @@ mod tests {
     fn test_rec_consume_write_failure() -> Result<()> {
         // -- Setup & Fixtures
         let (mut producer, consumer) = new_spsc_bounded("rec-write-failure", 1)?;
-        queue_ticks(&mut producer, vec![Tick { ts_ns: 0, v: [1.0; 5] }])?;
+        queue_ticks(&mut producer, vec![Tick { epoch_micro: 0, v: [1.0; 5] }])?;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorder = TestRecorder {
             calls: Arc::clone(&calls),
@@ -297,7 +297,7 @@ mod tests {
     fn test_rec_consume_finish_failure() -> Result<()> {
         // -- Setup & Fixtures
         let (mut producer, consumer) = new_spsc_bounded("rec-finish-failure", 1)?;
-        queue_ticks(&mut producer, vec![Tick { ts_ns: 0, v: [1.0; 5] }])?;
+        queue_ticks(&mut producer, vec![Tick { epoch_micro: 0, v: [1.0; 5] }])?;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorder = TestRecorder {
             calls: Arc::clone(&calls),

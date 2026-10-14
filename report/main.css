@@ -278,6 +278,13 @@ thead th {
   display: block;
 }
 
+.overview-cpu {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .overview-cell.is-absent {
   color: var(--muted);
 }
@@ -368,7 +375,7 @@ thead th {
 
 .cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 12px;
 }
 

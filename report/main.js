@@ -6,6 +6,7 @@ const CAPTURED_DIR = "sandbox/captured/";
 const MOCK_DIR = "sandbox/mock-data/";
 const METRICS_FILE = "capture-metrics.json";
 const MANIFEST_FILE = "manifest.json";
+const CPU_SAMPLES_FILE = "cpu-samples.jsonl";
 const TICK_SECONDS = 0.005;
 const DATASET_NAME = /^[dm]\d+$/;
 const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
@@ -28,6 +29,8 @@ const CHARTS = [
   { title: "Output size", unit: "lower is better", get: (m) => m.output_bytes, format: formatBytes, skipNoop: true },
   { title: "Bytes per tick", unit: "lower is better", get: bytesPerTick, format: formatDecimal, skipNoop: true },
   { title: "Flush latency p99", unit: "ms, lower is better", get: (m) => m.flush_ms_p99, format: formatMs },
+  { title: "Sim thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.sim?.avg, format: formatPercent },
+  { title: "Rec thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.rec?.avg, format: formatPercent },
 ];
 
 const TABLE_ROWS = [
@@ -47,6 +50,10 @@ const TABLE_ROWS = [
   { label: "Flush p99", get: (m) => m.flush_ms_p99, format: formatMs, better: "low" },
   { label: "Flush max", get: (m) => m.flush_ms_max, format: formatMs, better: "low" },
   { label: "Finish", get: (m) => m.finish_ms, format: formatMs, better: "low" },
+  { label: "Sim thread CPU", get: (m) => m.cpu?.sim?.avg ?? null, format: formatPercent, better: "low" },
+  { label: "Rec thread CPU", get: (m) => m.cpu?.rec?.avg ?? null, format: formatPercent, better: "low" },
+  { label: "Process CPU", get: (m) => m.cpu?.process?.avg ?? null, format: formatPercent, better: "low" },
+  { label: "Process RSS peak", get: (m) => m.cpu?.rssPeak ?? null, format: formatBytes, better: "low" },
 ];
 
 // endregion: --- Constants
@@ -154,12 +161,17 @@ async function loadRunGroup(name, speed) {
   const listed = await listDirectories(datasetUrl);
   const backends = listed ?? KNOWN_BACKENDS;
   const runs = await Promise.all(backends.map((backend) => loadRun(datasetUrl, backend, speed)));
-  return runs.filter((run) => listed !== null || run.metrics !== null);
+  return runs.filter((run) => listed !== null || run.metrics !== null || run.cpu !== null);
 }
 
 async function loadRun(datasetUrl, backend, speed) {
-  const metrics = await fetchJson(`${datasetUrl}${encodeURIComponent(backend)}/${METRICS_FILE}`);
-  return { backend, speed, metrics };
+  const base = `${datasetUrl}${encodeURIComponent(backend)}/`;
+  const [metrics, cpuText] = await Promise.all([
+    fetchJson(`${base}${METRICS_FILE}`),
+    fetchText(`${base}${CPU_SAMPLES_FILE}`),
+  ]);
+  const cpu = summarizeCpu(cpuText);
+  return { backend, speed, cpu, metrics: metrics && { ...metrics, cpu } };
 }
 
 /// Returns the direct child directory names of a server directory listing, or null when unavailable.
@@ -204,6 +216,72 @@ async function fetchJson(url) {
   } catch {
     return null;
   }
+}
+
+async function fetchText(url) {
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    return response.ok ? await response.text() : null;
+  } catch {
+    return null;
+  }
+}
+
+/// Parses JSON Lines one line at a time, skipping blank lines and lines that do not parse, such as a trailing partial line.
+function parseJsonLines(text) {
+  const lines = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      lines.push(JSON.parse(line));
+    } catch {
+      // Partial or invalid line, skipped.
+    }
+  }
+  return lines;
+}
+
+/// Summarizes one run's `cpu-samples.jsonl`. The first sample of each thread has a null `cpu_pct` and is excluded.
+function summarizeCpu(text) {
+  if (text == null) {
+    return null;
+  }
+  const threads = { "simrec-sim": [], "simrec-rec": [] };
+  const processPct = [];
+  let rssPeak = null;
+  let error = null;
+  for (const line of parseJsonLines(text)) {
+    if (line.kind === "thread" && Object.hasOwn(threads, line.thread)) {
+      threads[line.thread].push(line.cpu_pct);
+    } else if (line.kind === "process") {
+      processPct.push(line.cpu_pct);
+      if (typeof line.rss_bytes === "number") {
+        rssPeak = Math.max(rssPeak ?? 0, line.rss_bytes);
+      }
+    } else if (line.kind === "error") {
+      error ??= line.message;
+    }
+  }
+  return {
+    sim: pctStats(threads["simrec-sim"]),
+    rec: pctStats(threads["simrec-rec"]),
+    process: pctStats(processPct),
+    rssPeak,
+    error,
+  };
+}
+
+/// Returns the average and peak of the numeric values, or null when there are none.
+function pctStats(values) {
+  const numbers = values.filter((value) => typeof value === "number" && Number.isFinite(value));
+  if (!numbers.length) {
+    return null;
+  }
+  const total = numbers.reduce((sum, value) => sum + value, 0);
+  const peak = numbers.reduce((max, value) => Math.max(max, value), 0);
+  return { avg: total / numbers.length, peak };
 }
 
 // endregion: --- Loading
@@ -316,14 +394,20 @@ function renderOverviewCell(run) {
   if (!run) {
     return h("td", { class: "overview-cell is-absent" }, "-");
   }
+  const cpu = run.cpu ? h(
+    "span",
+    { class: "overview-cpu" },
+    `CPU rec ${formatOptional(run.cpu?.rec?.avg, formatPercent)}`,
+  ) : null;
   if (!run.metrics) {
-    return h("td", { class: "overview-cell is-incomplete" }, "incomplete");
+    return h("td", { class: "overview-cell is-incomplete" }, "incomplete", cpu);
   }
   return h(
     "td",
     { class: "overview-cell" },
     h("span", { class: "overview-rate" }, formatRate(run.metrics.ticks_per_s)),
     h("span", { class: "overview-size" }, formatBytes(run.metrics.output_bytes)),
+    cpu,
   );
 }
 
@@ -430,6 +514,10 @@ function renderWarnings(dataset, runs) {
   if (incomplete > 0) {
     messages.push(`${incomplete} run(s) without ${METRICS_FILE}: incomplete, failed, or still running.`);
   }
+  const withoutCpu = runs.filter((run) => !run.cpu).length;
+  if (withoutCpu > 0) {
+    messages.push(`${withoutCpu} run(s) without ${CPU_SAMPLES_FILE}: CPU is not shown for them.`);
+  }
   if (!dataset.listed) {
     messages.push("Directory listing is unavailable, so runs were probed by known names only.");
   }
@@ -450,6 +538,9 @@ function renderRunCard(run, dataset) {
   const card = h("article", { class: "run-card", style: `--backend-color: ${backendColor(run.backend)}` }, header);
   if (!metrics) {
     card.append(h("p", { class: "run-card-empty" }, `No ${METRICS_FILE}. The run is incomplete, failed, or still running.`));
+    if (run.cpu) {
+      card.append(renderStatList(cpuRows(run.cpu)), ...renderCpuError(run.cpu));
+    }
     return card;
   }
   const stats = [
@@ -463,6 +554,7 @@ function renderRunCard(run, dataset) {
     ["Stalls", formatInt(metrics.stall_count)],
     ["Finish", formatMs(metrics.finish_ms)],
     ["Config", `flush ${metrics.flush_ms} ms, ring ${formatInt(metrics.ring_cap)}`],
+    ...cpuRows(run.cpu),
   ];
   card.append(
     h(
@@ -471,13 +563,42 @@ function renderRunCard(run, dataset) {
       h("span", { class: "run-card-hero-value" }, formatCompact(metrics.ticks_per_s)),
       h("span", { class: "run-card-hero-label" }, "ticks/s"),
     ),
-    h("dl", { class: "run-card-stats" }, stats.map(([label, value]) => [h("dt", { "data-tip": LABEL_INFO[label] }, label), h("dd", {}, value)])),
+    renderStatList(stats),
   );
   const conservation = renderConservation(metrics, dataset.manifest);
   if (conservation) {
     card.append(conservation);
   }
+  card.append(...renderCpuError(run.cpu));
   return card;
+}
+
+function renderStatList(stats) {
+  return h(
+    "dl",
+    { class: "run-card-stats" },
+    stats.map(([label, value]) => [h("dt", { "data-tip": LABEL_INFO[label] }, label), h("dd", {}, value)]),
+  );
+}
+
+function cpuRows(cpu) {
+  return [
+    ["Sim thread CPU", formatCpuStat(cpu?.sim)],
+    ["Rec thread CPU", formatCpuStat(cpu?.rec)],
+    ["Process CPU", formatCpuStat(cpu?.process)],
+    ["Process RSS peak", formatOptional(cpu?.rssPeak, formatBytes)],
+  ];
+}
+
+function formatCpuStat(stat) {
+  return stat ? `${formatPercent(stat.avg)} avg, ${formatPercent(stat.peak)} peak` : "n/a";
+}
+
+function renderCpuError(cpu) {
+  if (!cpu?.error) {
+    return [];
+  }
+  return [h("p", { class: "run-card-check is-warn" }, `CPU sampling stopped: ${cpu.error}`)];
 }
 
 function renderConservation(metrics, manifest) {
@@ -501,6 +622,7 @@ function renderCharts(runs, speed) {
   const figures = CHARTS.map((chart) => {
     const bars = runs
       .filter((run) => !(chart.skipNoop && run.backend === "noop"))
+      .filter((run) => chart.get(run.metrics) != null)
       .map((run) => ({
         label: run.backend,
         value: chart.get(run.metrics) ?? 0,
@@ -821,6 +943,10 @@ function formatInt(value) {
 
 function formatDecimal(value) {
   return value.toFixed(2);
+}
+
+function formatPercent(value) {
+  return `${value.toFixed(1)}%`;
 }
 
 function formatCompact(value) {

@@ -66,6 +66,10 @@ cargo run --release -p simrec -- --sql --duration d1 --speed max --with-index
 cargo run --release -p simrec -- --raw --duration m1 --speed real
 cargo run --release -p simrec -- --sql --duration m1 --speed real
 cargo run --release -p simrec -- --sql --duration m1 --speed real --with-index
+
+cargo run --release -p simrec -- --raw --duration m10 --speed real
+cargo run --release -p simrec -- --sql --duration m10 --speed real
+cargo run --release -p simrec -- --sql --duration m10 --speed real --with-index
 ```
 
 Help output from `cargo run --release -p simrec -- --help`:

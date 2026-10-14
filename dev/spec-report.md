@@ -35,6 +35,7 @@ python3 -m http.server 8000
 | ---- | --- |
 | `sandbox/captured/<name>-<speed>/<backend>/capture-metrics.json` | run metrics, schema in `dev/spec-overall.md` |
 | `sandbox/mock-data/<name>/manifest.json` | expected tick count, input size, rate, seed |
+| `sandbox/captured/<name>-<speed>/<backend>/cpu-samples.jsonl` | per-thread and process CPU samples, read line by line, partial lines skipped |
 
 - A backend folder without `capture-metrics.json` is shown as incomplete. This covers runs that failed, were interrupted, or are still running.
 - A missing manifest disables the tick conservation check and shows a warning.
@@ -63,15 +64,15 @@ Backends in each run folder are found the same way:
 
 - **Speed tabs:** two main tabs, **Real** and **Max**, each with its dataset and run counts. A tab with no runs is disabled. Every view below shows only the runs of the selected speed, because realtime and max runs are not comparable. On load, the page uses the speed from the URL hash when it has runs, and otherwise the first speed that has runs.
 
-- **Overview:** a table for the selected speed, with one row per dataset that has runs at that speed and one column per backend. Each cell shows throughput and output size, `incomplete`, or `-`. Clicking a row selects that dataset.
+- **Overview:** a table for the selected speed, with one row per dataset that has runs at that speed and one column per backend. Each cell shows throughput, output size, the average CPU of the rec thread, `incomplete`, or `-`. Clicking a row selects that dataset.
 
 - **Dataset tabs:** dataset name, duration label, and run count for the selected speed. The selected speed and dataset are kept in the URL hash as `#<speed>/<dataset>`, for example `#real/m010`. The older `#<dataset>` form is still accepted.
 
 - **Dataset panel:** shows the selected dataset at the selected speed.
   - Header: name, duration, expected ticks for the duration, and rate. A second line shows the manifest source folder, its tick count, input size, and seed, because a shared manifest may describe a longer dataset.
   - Warnings: missing manifest, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, and probe-only discovery.
-  - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, and the tick conservation badge.
-  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, and flush p99. Charts redraw on resize and support HiDPI screens.
+  - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, sim thread, rec thread, and process CPU (average and peak), process RSS peak, and the tick conservation badge. A run without metrics still shows its CPU when its samples file exists.
+  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, flush p99, and sim and rec thread CPU. Charts redraw on resize and support HiDPI screens.
   - Comparison table: one row per metric and one column per backend. The best value in a row is highlighted. Cells that display the same text as the best value are all highlighted.
 
 ## Derived Values
@@ -79,8 +80,10 @@ Backends in each run folder are found the same way:
 - `speedup = ticks_total * 0.005 / wall_time_s`, the replayed sensor time divided by wall time. Shown as `n/a` when wall time is zero.
 - `bytes_per_tick = output_bytes / ticks_total`. Shown as `n/a` when no ticks were recorded.
 - Input size: `tick_count * bytes_per_tick` from the manifest.
+- CPU averages are the mean of the non-null `cpu_pct` values in `cpu-samples.jsonl`, and CPU peaks are the maximum. The first sample of each thread is null and is excluded.
 - The best value is the minimum or the maximum, depending on the metric. At least two recording backends must have a value. `noop` is excluded because it writes no recording.
 - `noop` is also left out of the output size and bytes per tick charts.
+- `noop` stays in the CPU charts, where it shows the pipeline overhead without recording.
 
 ## Formatting
 
@@ -100,11 +103,11 @@ Backends in each run folder are found the same way:
 
 - Discovery without a directory listing sees only the known names, or the names passed with `?datasets=`.
 - Probing missing files can log 404 errors in the browser console.
+- CPU averages come from sampling, so activity after the last sample is not counted.
 - File sizes on disk are not read. Output size comes from `output_bytes` in the metrics.
 - The flush percentiles are power-of-two bucket estimates, as described in `dev/spec-overall.md`.
 
 ## Deferred
 
 - Cross-dataset charts, such as throughput as a function of duration.
-- CPU and RSS measurements, once they are captured.
 - A generated `sandbox/index.json` for servers without directory listing.

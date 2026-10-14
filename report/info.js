@@ -23,4 +23,8 @@ export const LABEL_INFO = {
   "Max pending ticks": "Largest number of ticks waiting in the buffer before a flush. Lower is better.",
   "Finish": "Time spent writing the remaining ticks after capture stopped, in milliseconds.",
   "Config": "Flush interval and ring capacity used for this run.",
+  "Sim thread CPU": "Average CPU of the replay producer thread (simrec-sim), as a percent of one core. Lower means less replay overhead.",
+  "Rec thread CPU": "Average CPU of the recorder thread (simrec-rec), as a percent of one core. Lower means less recording overhead.",
+  "Process CPU": "Average CPU of the whole capture process, as a percent of one core. Lower is better.",
+  "Process RSS peak": "Peak resident memory of the capture process, in bytes. Lower is better.",
 };

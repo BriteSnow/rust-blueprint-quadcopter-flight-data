@@ -12,7 +12,7 @@ const DATASET_NAME = /^[dm]\d+$/;
 const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
 const SPEEDS = ["real", "max"];
 
-const KNOWN_BACKENDS = ["noop", "raw", "sqlite-pk-index", "sqlite-all-index"];
+const KNOWN_BACKENDS = ["raw", "sqlite-pk-index", "sqlite-all-index", "noop"];
 const FALLBACK_DATASETS = ["m001", "m005", "m010", "m030", "m060", "d001", "d010"];
 const MANIFEST_FALLBACKS = ["d001", "d010"];
 

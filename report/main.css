@@ -246,16 +246,17 @@ thead th {
   background: var(--surface-2);
 }
 
-.overview-table tbody tr.is-selected {
+.overview-table tbody tr.is-selected th[scope="row"] {
   box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.overview-table th[scope="row"] {
-  display: grid;
 }
 
 .overview-name {
   font-weight: 600;
+}
+
+.overview-name,
+.overview-duration {
+  display: block;
 }
 
 .overview-duration,
@@ -375,7 +376,7 @@ thead th {
 
 .cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -565,6 +566,10 @@ thead th {
   }
 
   .charts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cards-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -48,12 +48,13 @@ Replays a mock dataset through the capture pipeline into exactly one backend.
 
 ```sh
 cargo run --release -p simrec -- --noop --duration d1 --speed max
-cargo run --release -p simrec -- --raw --duration d1 --speed real
-cargo run --release -p simrec -- --raw --duration m1 --speed real
 cargo run --release -p simrec -- --raw --duration d1 --speed max
 cargo run --release -p simrec -- --sql --duration d1 --speed max
-cargo run --release -p simrec -- --sql --duration d1 --speed max --with-index --flush-ms 1000
-cargo run --release -p simrec -- --raw --duration m5 --speed real
+
+# real mode (just 1 minute window, put m5, m10, or m30 to have bigger capture window)
+cargo run --release -p simrec -- --raw --duration m1 --speed real
+cargo run --release -p simrec -- --sql --duration m1 --speed real
+cargo run --release -p simrec -- --sql --duration m1 --speed real --with-index
 ```
 
 Help output from `cargo run --release -p simrec -- --help`:

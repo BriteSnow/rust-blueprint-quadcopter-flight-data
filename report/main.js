@@ -10,7 +10,8 @@ const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
 const SPEEDS = ["real", "max"];
 
 const KNOWN_BACKENDS = ["noop", "raw", "sqlite-no-index", "sqlite-with-index"];
-const FALLBACK_DATASETS = ["m001", "m010", "m030", "m060", "d001", "d010"];
+const FALLBACK_DATASETS = ["m001", "m005", "m010", "m030", "m060", "d001", "d010"];
+const MANIFEST_FALLBACKS = ["d001", "d010"];
 
 const BACKEND_COLORS = {
   noop: "#8a94a6",
@@ -53,15 +54,19 @@ const TABLE_ROWS = [
 const ui = {
   status: document.querySelector(".app-status"),
   refresh: document.querySelector(".refresh-button"),
+  speedNav: document.querySelector(".speed-nav"),
   overview: document.querySelector(".overview"),
   nav: document.querySelector(".dataset-nav"),
   panel: document.querySelector(".dataset-panel"),
 };
 
+const hashSelection = readHash();
+
 const state = {
   datasets: [],
   discovery: null,
-  selected: readHash(),
+  speed: hashSelection.speed,
+  selected: hashSelection.dataset,
   charts: [],
   loadedAt: null,
   loading: false,
@@ -88,9 +93,7 @@ async function loadReport() {
     state.datasets = datasets
       .filter((dataset) => discovery.mode !== "probe" || dataset.runs.length > 0)
       .sort(compareDatasets);
-    if (!state.datasets.some((dataset) => dataset.name === state.selected)) {
-      state.selected = state.datasets[0]?.name ?? null;
-    }
+    reconcileSelection();
     state.loadedAt = new Date();
   } catch (error) {
     state.error = String(error);
@@ -115,16 +118,33 @@ async function discoverDatasets() {
 }
 
 async function loadDataset(name, speeds, listed) {
-  const [manifest, runs] = await Promise.all([
-    fetchJson(`${MOCK_DIR}${encodeURIComponent(name)}/${MANIFEST_FILE}`),
+  const [found, runs] = await Promise.all([
+    loadManifest(name),
     Promise.all(speeds.map((speed) => loadRunGroup(name, speed))),
   ]);
   return {
     name,
-    manifest,
+    manifest: found?.manifest ?? null,
+    manifestSource: found?.source ?? null,
     listed,
     runs: runs.flat().sort(compareRuns),
   };
+}
+
+/// Manifests are shared mock data, so a dataset without its own manifest uses the d001 or d010 one.
+async function loadManifest(name) {
+  for (const source of manifestSources(name)) {
+    const manifest = await fetchJson(`${MOCK_DIR}${encodeURIComponent(source)}/${MANIFEST_FILE}`);
+    if (manifest) {
+      return { source, manifest };
+    }
+  }
+  return null;
+}
+
+/// Returns the dataset names whose manifest may describe this dataset, in lookup order.
+function manifestSources(name) {
+  return [...new Set([name, ...MANIFEST_FALLBACKS])];
 }
 
 async function loadRunGroup(name, speed) {
@@ -190,6 +210,11 @@ async function fetchJson(url) {
 
 function render() {
   renderStatus();
+  renderView();
+}
+
+function renderView() {
+  renderSpeedNav();
   renderOverview();
   renderNav();
   renderPanel();
@@ -214,9 +239,31 @@ function renderStatus() {
   ui.status.textContent = `${state.datasets.length} dataset(s), ${runCount} run(s), via ${discovery}, updated ${time}`;
 }
 
+function renderSpeedNav() {
+  ui.speedNav.replaceChildren(
+    ...SPEEDS.map((speed) => {
+      const datasets = speedDatasets(speed);
+      const runCount = datasets.reduce((total, dataset) => total + speedRuns(dataset, speed).length, 0);
+      return h(
+        "button",
+        {
+          type: "button",
+          class: "speed-tab",
+          "aria-pressed": speed === state.speed ? "true" : "false",
+          disabled: datasets.length === 0,
+          onclick: () => selectSpeed(speed),
+        },
+        h("span", { class: "speed-tab-name" }, speed === "real" ? "Real" : "Max"),
+        h("span", { class: "speed-tab-meta" }, `${datasets.length} dataset(s), ${runCount} run(s)`),
+      );
+    }),
+  );
+}
+
 function renderOverview() {
+  const datasets = speedDatasets(state.speed);
   const backends = sortBackends([
-    ...new Set(state.datasets.flatMap((dataset) => dataset.runs.map((run) => run.backend))),
+    ...new Set(datasets.flatMap((dataset) => speedRuns(dataset, state.speed).map((run) => run.backend))),
   ]);
   if (!backends.length) {
     ui.overview.replaceChildren();
@@ -238,8 +285,9 @@ function renderOverview() {
     h(
       "tbody",
       {},
-      state.datasets.map((dataset) =>
-        h(
+      datasets.map((dataset) => {
+        const runs = speedRuns(dataset, state.speed);
+        return h(
           "tr",
           {
             class: dataset.name === state.selected ? "is-selected" : null,
@@ -251,41 +299,35 @@ function renderOverview() {
             h("span", { class: "overview-name" }, dataset.name),
             h("span", { class: "overview-duration" }, durationLabel(dataset.name)),
           ),
-          backends.map((backend) =>
-            renderOverviewCell(dataset.runs.filter((run) => run.backend === backend)),
-          ),
-        ),
-      ),
+          backends.map((backend) => renderOverviewCell(runs.find((run) => run.backend === backend))),
+        );
+      }),
     ),
   );
   ui.overview.replaceChildren(
-    h("h2", { class: "section-title" }, "Overview"),
+    h("h2", { class: "section-title" }, `Overview, ${speedLabel(state.speed)}`),
     h("div", { class: "table-wrap" }, table),
   );
 }
 
-function renderOverviewCell(runs) {
-  if (!runs.length) {
+function renderOverviewCell(run) {
+  if (!run) {
     return h("td", { class: "overview-cell is-absent" }, "-");
   }
-  return h("td", { class: "overview-cell" }, runs.map((run) => renderOverviewLine(run)));
-}
-
-function renderOverviewLine(run) {
   if (!run.metrics) {
-    return h("div", {}, `${run.speed}: incomplete`);
+    return h("td", { class: "overview-cell is-incomplete" }, "incomplete");
   }
   return h(
-    "div",
-    {},
-    h("span", { class: "overview-rate" }, `${run.speed}: ${formatRate(run.metrics.ticks_per_s)}`),
+    "td",
+    { class: "overview-cell" },
+    h("span", { class: "overview-rate" }, formatRate(run.metrics.ticks_per_s)),
     h("span", { class: "overview-size" }, formatBytes(run.metrics.output_bytes)),
   );
 }
 
 function renderNav() {
   ui.nav.replaceChildren(
-    ...state.datasets.map((dataset) =>
+    ...speedDatasets(state.speed).map((dataset) =>
       h(
         "button",
         {
@@ -295,7 +337,11 @@ function renderNav() {
           onclick: () => selectDataset(dataset.name),
         },
         h("span", { class: "dataset-tab-name" }, dataset.name),
-        h("span", { class: "dataset-tab-meta" }, `${durationLabel(dataset.name)}, ${dataset.runs.length} run(s)`),
+        h(
+          "span",
+          { class: "dataset-tab-meta" },
+          `${durationLabel(dataset.name)}, ${speedRuns(dataset, state.speed).length} run(s)`,
+        ),
       ),
     ),
   );
@@ -303,26 +349,24 @@ function renderNav() {
 
 function renderPanel() {
   state.charts = [];
-  const dataset = state.datasets.find((item) => item.name === state.selected);
+  const dataset = speedDatasets(state.speed).find((item) => item.name === state.selected);
   if (!dataset) {
     ui.panel.replaceChildren(renderEmptyState());
     return;
   }
+  const runs = speedRuns(dataset, state.speed);
+  const complete = runs.filter((run) => run.metrics);
   const sections = [
     renderDatasetHeader(dataset),
-    renderWarnings(dataset),
+    renderWarnings(dataset, runs),
     h(
       "section",
       { class: "report-section" },
-      h("h3", { class: "section-title" }, "Runs"),
-      dataset.runs.length
-        ? h("div", { class: "cards-grid" }, dataset.runs.map((run) => renderRunCard(run, dataset)))
-        : h("p", { class: "muted" }, "No backend folders found for this dataset."),
+      h("h3", { class: "section-title" }, `Runs, ${speedLabel(state.speed)}`),
+      h("div", { class: "cards-grid" }, runs.map((run) => renderRunCard(run, dataset))),
     ),
-    ...speedGroups(dataset.runs).flatMap(({ speed, runs }) => {
-      const complete = runs.filter((run) => run.metrics);
-      return [renderCharts(complete, speed), renderComparisonTable(complete, speed)];
-    }),
+    renderCharts(complete, state.speed),
+    renderComparisonTable(complete, state.speed),
   ];
   ui.panel.replaceChildren(...sections.filter(Boolean));
   drawCharts();
@@ -347,37 +391,40 @@ function renderEmptyState() {
 }
 
 function renderDatasetHeader(dataset) {
-  const facts = [durationLabel(dataset.name)];
   const manifest = dataset.manifest;
-  if (manifest) {
-    facts.push(
-      `${formatInt(manifest.tick_count)} ticks`,
-      `input ${formatBytes(manifest.tick_count * manifest.bytes_per_tick)}`,
-      `${manifest.rate_hz} Hz`,
-      `seed ${manifest.seed}`,
-    );
+  const facts = [durationLabel(dataset.name)];
+  const minutes = durationMinutes(dataset.name);
+  if (manifest && minutes !== null) {
+    facts.push(`${formatInt(minutes * 60 * manifest.rate_hz)} ticks at ${manifest.rate_hz} Hz`);
   }
+  const source = manifest
+    ? h(
+        "p",
+        { class: "dataset-facts small" },
+        `Manifest ${dataset.manifestSource}: ${formatInt(manifest.tick_count)} ticks, input ${formatBytes(manifest.tick_count * manifest.bytes_per_tick)}, seed ${manifest.seed}`,
+      )
+    : null;
   return h(
     "header",
     { class: "dataset-header" },
     h("h2", { class: "dataset-title" }, dataset.name),
     h("p", { class: "dataset-facts" }, facts.join(", ")),
+    source,
   );
 }
 
-function renderWarnings(dataset) {
+function renderWarnings(dataset, runs) {
   const messages = [];
-  const complete = dataset.runs.filter((run) => run.metrics);
+  const complete = runs.filter((run) => run.metrics);
   if (!dataset.manifest) {
-    messages.push(`Manifest not found at ${MOCK_DIR}${dataset.name}/${MANIFEST_FILE}; tick conservation is not checked.`);
+    const paths = manifestSources(dataset.name).map((source) => `${MOCK_DIR}${source}/${MANIFEST_FILE}`);
+    messages.push(`Manifest not found at ${paths.join(", ")}; tick conservation is not checked.`);
   }
-  for (const { speed, runs } of speedGroups(dataset.runs)) {
-    const configs = new Set(runs.filter((run) => run.metrics).map((run) => configKey(run.metrics)));
-    if (configs.size > 1) {
-      messages.push(`${speedLabel(speed)} runs use different flush interval or ring capacity; comparisons are not like-for-like.`);
-    }
+  const configs = new Set(complete.map((run) => configKey(run.metrics)));
+  if (configs.size > 1) {
+    messages.push(`${speedLabel(state.speed)} runs use different flush interval or ring capacity; comparisons are not like-for-like.`);
   }
-  const incomplete = dataset.runs.length - complete.length;
+  const incomplete = runs.length - complete.length;
   if (incomplete > 0) {
     messages.push(`${incomplete} run(s) without ${METRICS_FILE}: incomplete, failed, or still running.`);
   }
@@ -405,6 +452,7 @@ function renderRunCard(run, dataset) {
   }
   const stats = [
     ["Wall time", formatSeconds(metrics.wall_time_s)],
+    ["Ticks", formatInt(metrics.ticks_total)],
     ["Speedup", formatOptional(speedup(metrics), (v) => `${v.toFixed(1)}x realtime`)],
     ["Output", formatBytes(metrics.output_bytes)],
     ["Bytes/tick", formatOptional(bytesPerTick(metrics), formatDecimal)],
@@ -422,8 +470,11 @@ function renderRunCard(run, dataset) {
       h("span", { class: "run-card-hero-label" }, "ticks/s"),
     ),
     h("dl", { class: "run-card-stats" }, stats.map(([label, value]) => [h("dt", {}, label), h("dd", {}, value)])),
-    renderConservation(metrics, dataset.manifest),
   );
+  const conservation = renderConservation(metrics, dataset.manifest);
+  if (conservation) {
+    card.append(conservation);
+  }
   return card;
 }
 
@@ -436,8 +487,8 @@ function renderConservation(metrics, manifest) {
   }
   return h(
     "p",
-    { class: "run-card-check is-warn" },
-    `Tick mismatch: ${formatInt(metrics.ticks_total)} of ${formatInt(manifest.tick_count)}`,
+    { class: "run-card-check is-neutral" },
+    `Tick window: ${formatInt(metrics.ticks_total)} of ${formatInt(manifest.tick_count)}`,
   );
 }
 
@@ -499,17 +550,19 @@ function renderComparisonTable(runs, speed) {
     TABLE_ROWS.map((row) => {
       const values = runs.map((run) => row.get(run.metrics));
       const best = bestValue(row, runs, values);
+      const bestText = best === null ? null : formatOptional(best, row.format);
       return h(
         "tr",
         {},
         h("th", { scope: "row" }, row.label),
-        values.map((value, index) =>
-          h(
+        values.map((value, index) => {
+          const text = formatOptional(value, row.format);
+          return h(
             "td",
-            { class: best !== null && value === best && runs[index].backend !== "noop" ? "is-best" : null },
-            formatOptional(value, row.format),
-          ),
-        ),
+            { class: text === bestText && runs[index].backend !== "noop" ? "is-best" : null },
+            text,
+          );
+        }),
       );
     }),
   );
@@ -585,17 +638,42 @@ function drawBarChart(canvas, bars, format) {
 
 // region:    --- Support
 
-function selectDataset(name) {
-  state.selected = name;
-  history.replaceState(null, "", `#${encodeURIComponent(name)}`);
-  renderOverview();
-  renderNav();
-  renderPanel();
+function selectSpeed(speed) {
+  state.speed = speed;
+  reconcileSelection();
+  writeHash();
+  renderView();
 }
 
+function selectDataset(name) {
+  state.selected = name;
+  writeHash();
+  renderView();
+}
+
+/// Keeps the selected speed and dataset valid, falling back to the first ones that have runs.
+function reconcileSelection() {
+  if (!speedDatasets(state.speed).length) {
+    state.speed = SPEEDS.find((speed) => speedDatasets(speed).length > 0) ?? SPEEDS[0];
+  }
+  const datasets = speedDatasets(state.speed);
+  if (!datasets.some((dataset) => dataset.name === state.selected)) {
+    state.selected = datasets[0]?.name ?? null;
+  }
+}
+
+/// Reads `#<speed>/<dataset>`, `#<speed>`, or the older `#<dataset>` form.
 function readHash() {
-  const hash = location.hash.slice(1);
-  return hash ? decodeURIComponent(hash) : null;
+  const [first = "", second = ""] = location.hash.slice(1).split("/").map(decodeURIComponent);
+  if (SPEEDS.includes(first)) {
+    return { speed: first, dataset: second || null };
+  }
+  return { speed: null, dataset: first || null };
+}
+
+function writeHash() {
+  const dataset = state.selected ? `/${encodeURIComponent(state.selected)}` : "";
+  history.replaceState(null, "", `#${state.speed}${dataset}`);
 }
 
 /// Creates an element; `class`, `style`, and `on...` props are handled, other props become attributes.
@@ -642,10 +720,12 @@ function compareSpeeds(a, b) {
   return SPEEDS.indexOf(a) - SPEEDS.indexOf(b);
 }
 
-function speedGroups(runs) {
-  return SPEEDS.map((speed) => ({ speed, runs: runs.filter((run) => run.speed === speed) })).filter(
-    (group) => group.runs.length > 0,
-  );
+function speedRuns(dataset, speed) {
+  return dataset.runs.filter((run) => run.speed === speed);
+}
+
+function speedDatasets(speed) {
+  return state.datasets.filter((dataset) => dataset.runs.some((run) => run.speed === speed));
 }
 
 function speedLabel(speed) {
@@ -788,10 +868,11 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("hashchange", () => {
-  const name = readHash();
-  if (name && name !== state.selected && state.datasets.some((dataset) => dataset.name === name)) {
-    selectDataset(name);
-  }
+  const { speed, dataset } = readHash();
+  state.speed = speed ?? state.speed;
+  state.selected = dataset ?? state.selected;
+  reconcileSelection();
+  renderView();
 });
 
 ui.refresh.addEventListener("click", loadReport);

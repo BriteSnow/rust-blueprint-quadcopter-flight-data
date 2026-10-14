@@ -46,7 +46,7 @@ Run folders are `<name>-<speed>`, where `<name>` is the mock dataset and `<speed
 
 2. Directory listing: an HTML listing of `sandbox/captured/` is parsed. Only direct child directories that match `^[dm]\d+-(real|max)$` are kept. Other folders, including the old `<name>/<backend>` layout, are ignored.
 
-3. Probe: when no listing is available, the page tries the known names `m001`, `m010`, `m030`, `m060`, `d001`, and `d010` with both `real` and `max`. Datasets with no run found are dropped.
+3. Probe: when no listing is available, the page tries the known names `m001`, `m005`, `m010`, `m030`, `m060`, `d001`, and `d010` with both `real` and `max`. Datasets with no run found are dropped.
 
 Backends in each run folder are found the same way:
 
@@ -58,18 +58,20 @@ Backends in each run folder are found the same way:
 
 ## Views
 
-- **Header:** title, load status (dataset and run counts, discovery method, update time), and a **Refresh** button.
+- **Header:** title, centered **Real** and **Max** speed tabs, load status (dataset and run counts, discovery method, update time), and a **Refresh** button.
 
-- **Overview:** a table with one row per dataset and one column per backend. Each cell has one line per speed (`real` or `max`) with throughput and output size, `incomplete`, or `-`. Clicking a row selects that dataset.
+- **Speed tabs:** two main tabs, **Real** and **Max**, each with its dataset and run counts. A tab with no runs is disabled. Every view below shows only the runs of the selected speed, because realtime and max runs are not comparable. On load, the page uses the speed from the URL hash when it has runs, and otherwise the first speed that has runs.
 
-- **Dataset tabs:** dataset name, duration label, and run count. The selected dataset is kept in the URL hash, for example `#d001`.
+- **Overview:** a table for the selected speed, with one row per dataset that has runs at that speed and one column per backend. Each cell shows throughput and output size, `incomplete`, or `-`. Clicking a row selects that dataset.
 
-- **Dataset panel:**
-  - Header: name, duration, tick count, input size, rate, and seed.
-  - Warnings: missing manifest, mixed run configurations (`flush_ms`, `ring_cap`) within one speed, incomplete runs, and probe-only discovery.
-  - Run cards: throughput, wall time, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, and the tick conservation badge.
-  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, and flush p99. One chart set is drawn per speed. Charts redraw on resize and support HiDPI screens.
-  - Comparison table: one row per metric and one column per backend, one table per speed, because realtime and max runs are not comparable. The best value in a row is highlighted.
+- **Dataset tabs:** dataset name, duration label, and run count for the selected speed. The selected speed and dataset are kept in the URL hash as `#<speed>/<dataset>`, for example `#real/m010`. The older `#<dataset>` form is still accepted.
+
+- **Dataset panel:** shows the selected dataset at the selected speed.
+  - Header: name, duration, expected ticks for the duration, and rate. A second line shows the manifest source folder, its tick count, input size, and seed, because a shared manifest may describe a longer dataset.
+  - Warnings: missing manifest, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, and probe-only discovery.
+  - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, and the tick conservation badge.
+  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, and flush p99. Charts redraw on resize and support HiDPI screens.
+  - Comparison table: one row per metric and one column per backend. The best value in a row is highlighted. Cells that display the same text as the best value are all highlighted.
 
 ## Derived Values
 

@@ -1,3 +1,5 @@
+import { LABEL_INFO } from "./info.js";
+
 // region:    --- Constants
 
 const CAPTURED_DIR = "sandbox/captured/";
@@ -469,7 +471,7 @@ function renderRunCard(run, dataset) {
       h("span", { class: "run-card-hero-value" }, formatCompact(metrics.ticks_per_s)),
       h("span", { class: "run-card-hero-label" }, "ticks/s"),
     ),
-    h("dl", { class: "run-card-stats" }, stats.map(([label, value]) => [h("dt", {}, label), h("dd", {}, value)])),
+    h("dl", { class: "run-card-stats" }, stats.map(([label, value]) => [h("dt", { "data-tip": LABEL_INFO[label] }, label), h("dd", {}, value)])),
   );
   const conservation = renderConservation(metrics, dataset.manifest);
   if (conservation) {
@@ -516,7 +518,7 @@ function renderCharts(runs, speed) {
       h(
         "figcaption",
         { class: "chart-caption" },
-        h("span", { class: "chart-title" }, chart.title),
+        h("span", { class: "chart-title", "data-tip": LABEL_INFO[chart.title] }, chart.title),
         h("span", { class: "chart-unit" }, chart.unit),
       ),
       canvas,
@@ -554,7 +556,7 @@ function renderComparisonTable(runs, speed) {
       return h(
         "tr",
         {},
-        h("th", { scope: "row" }, row.label),
+        h("th", { scope: "row", "data-tip": LABEL_INFO[row.label] }, row.label),
         values.map((value, index) => {
           const text = formatOptional(value, row.format);
           return h(
@@ -822,7 +824,7 @@ function formatDecimal(value) {
 }
 
 function formatCompact(value) {
-  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(value);
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(Math.round(value));
 }
 
 function formatRate(value) {

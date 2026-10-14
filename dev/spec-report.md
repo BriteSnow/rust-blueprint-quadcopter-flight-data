@@ -11,6 +11,7 @@
 ```text
 report.html          entry page at the repository root
 report/main.js       ES module: discovery, loading, rendering, Canvas 2D charts
+report/info.js       label descriptions for hover tooltips
 report/main.css      layout (CSS Grid), light and dark themes
 ```
 
@@ -84,7 +85,8 @@ Backends in each run folder are found the same way:
 ## Formatting
 
 - Byte sizes use decimal units: B, KB, MB, GB, TB.
-- Rates use compact notation, for example `1.38M ticks/s`.
+- Rates are rounded to whole ticks/s, then use compact notation, for example `1.38M ticks/s`.
+- Table, card, and chart labels show a short description on hover, from `report/info.js`.
 - Milliseconds show 3 decimals below 1 ms, 2 decimals below 100 ms, and whole numbers above that.
 - Wall time is shown in seconds, minutes and seconds, or hours and minutes.
 

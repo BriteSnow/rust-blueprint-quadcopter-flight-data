@@ -11,7 +11,7 @@
   --ok-text: #1e7a4a;
   --warn-bg: #fff3dc;
   --warn-text: #8a5a00;
-  --radius: 10px;
+  --radius: 6px;
   --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 2px 8px rgb(0 0 0 / 4%);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
@@ -206,7 +206,7 @@ thead th {
   gap: 2px;
   padding: 8px 16px;
   border: none;
-  border-radius: 7px;
+  border-radius: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -373,15 +373,26 @@ thead th {
 }
 
 .run-card {
+  position: relative;
   display: grid;
   align-content: start;
   gap: 10px;
-  padding: 14px;
+  padding: 16px 14px 14px;
   border: 1px solid var(--border);
-  border-top: 4px solid var(--backend-color);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.run-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--radius);
+  background: var(--backend-color);
 }
 
 .run-card-header {
@@ -549,4 +560,47 @@ thead th {
   .charts-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* -- Tooltip */
+
+[data-tip] {
+  cursor: pointer;
+}
+
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  display: grid;
+  gap: 6px;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.tooltip.is-visible {
+  opacity: 1;
+}
+
+.tooltip-title {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tooltip-body {
+  margin: 0;
+  color: var(--muted);
 }

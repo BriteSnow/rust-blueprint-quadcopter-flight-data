@@ -492,6 +492,38 @@ thead th {
   color: var(--muted);
 }
 
+/* -- Extrapolation */
+
+.horizon-toggle {
+  display: grid;
+  grid-auto-flow: column;
+  justify-content: start;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.horizon-tab {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.horizon-tab:hover {
+  background: var(--surface);
+}
+
+.horizon-tab[aria-pressed="true"] {
+  background: var(--surface);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 /* -- Charts */
 
 .charts-grid {

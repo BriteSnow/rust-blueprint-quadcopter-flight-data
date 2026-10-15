@@ -11,6 +11,13 @@ const TICK_SECONDS = 0.005;
 const DATASET_NAME = /^[dm]\d+$/;
 const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
 const SPEEDS = ["real", "max"];
+const MINUTES_PER_DAY = 1440;
+const HORIZONS = [
+  { label: "None", days: null },
+  { label: "1 day", days: 1 },
+  { label: "10 days", days: 10 },
+];
+const SCALED_FIELDS = ["ticks_total", "wall_time_s", "output_bytes", "flush_count", "stall_count"];
 
 const KNOWN_BACKENDS = ["raw", "sqlite-pk-index", "sqlite-all-index", "noop"];
 const FALLBACK_DATASETS = ["m001", "m005", "m010", "m030", "m060", "d001", "d010"];
@@ -76,6 +83,7 @@ const state = {
   discovery: null,
   speed: hashSelection.speed,
   selected: hashSelection.dataset,
+  horizon: HORIZONS[0],
   charts: [],
   loadedAt: null,
   loading: false,
@@ -442,6 +450,9 @@ function renderPanel() {
   }
   const runs = speedRuns(dataset, state.speed);
   const complete = runs.filter((run) => run.metrics);
+  const horizon = state.speed === "real" ? state.horizon : HORIZONS[0];
+  const factor = horizonFactor(dataset, horizon);
+  const scaled = complete.map((run) => ({ ...run, metrics: extrapolateMetrics(run.metrics, factor) }));
   const sections = [
     renderDatasetHeader(dataset),
     renderWarnings(dataset, runs),
@@ -451,8 +462,9 @@ function renderPanel() {
       h("h3", { class: "section-title" }, `Runs, ${speedLabel(state.speed)}`),
       h("div", { class: "cards-grid" }, runs.map((run) => renderRunCard(run, dataset))),
     ),
-    renderCharts(complete, state.speed),
-    renderComparisonTable(complete, state.speed),
+    renderHorizonToggle(dataset),
+    renderCharts(scaled, state.speed, horizon),
+    renderComparisonTable(scaled, state.speed),
   ];
   ui.panel.replaceChildren(...sections.filter(Boolean));
   drawCharts();
@@ -615,7 +627,7 @@ function renderConservation(metrics, manifest) {
   );
 }
 
-function renderCharts(runs, speed) {
+function renderCharts(runs, speed, horizon) {
   if (!runs.length) {
     return null;
   }
@@ -649,7 +661,7 @@ function renderCharts(runs, speed) {
   return h(
     "section",
     { class: "report-section" },
-    h("h3", { class: "section-title" }, `Charts, ${speedLabel(speed)}`),
+    h("h3", { class: "section-title" }, `Charts, ${speedLabel(speed)}${horizon.days ? `, extrapolated to ${horizon.label}` : ""}`),
     h("div", { class: "charts-grid" }, figures),
   );
 }
@@ -696,6 +708,38 @@ function renderComparisonTable(runs, speed) {
     h("h3", { class: "section-title" }, `Comparison, ${speedLabel(speed)}`),
     h("div", { class: "table-wrap" }, h("table", { class: "comparison-table" }, head, body)),
     h("p", { class: "muted small" }, "Highlighted cells are the best value among recording backends; noop is excluded."),
+  );
+}
+
+/// Shows the extrapolation toggle for the Real view, where wall time matches the recorded duration.
+function renderHorizonToggle(dataset) {
+  if (state.speed !== "real") {
+    return null;
+  }
+  const note = state.horizon.days
+    ? `Output size, ticks, wall time, flush count, and stalls are scaled by ${formatInt(horizonFactor(dataset, state.horizon))}x for ${dataset.name}. Rates and per-tick values are unchanged.`
+    : null;
+  return h(
+    "section",
+    { class: "report-section" },
+    h("h3", { class: "section-title" }, "Extrapolation"),
+    h(
+      "div",
+      { class: "horizon-toggle", role: "group", "aria-label": "Extrapolate to" },
+      HORIZONS.map((horizon) =>
+        h(
+          "button",
+          {
+            type: "button",
+            class: "horizon-tab",
+            "aria-pressed": horizon === state.horizon ? "true" : "false",
+            onclick: () => selectHorizon(horizon),
+          },
+          horizon.label,
+        ),
+      ),
+    ),
+    note ? h("p", { class: "muted small" }, note) : null,
   );
 }
 
@@ -761,6 +805,35 @@ function drawBarChart(canvas, bars, format) {
 // endregion: --- Charts
 
 // region:    --- Support
+
+/// Sets the extrapolation horizon used by the Real view charts and comparison table.
+function selectHorizon(horizon) {
+  state.horizon = horizon;
+  renderPanel();
+}
+
+/// Returns how many times the dataset recording must repeat to cover the horizon, or 1 when there is none.
+function horizonFactor(dataset, horizon) {
+  const minutes = durationMinutes(dataset.name);
+  if (!horizon.days || !minutes) {
+    return 1;
+  }
+  return (horizon.days * MINUTES_PER_DAY) / minutes;
+}
+
+/// Scales the fields that grow with recording length. Rates, per-tick values, latencies, and CPU stay as measured.
+function extrapolateMetrics(metrics, factor) {
+  if (factor === 1) {
+    return metrics;
+  }
+  const scaled = { ...metrics };
+  for (const field of SCALED_FIELDS) {
+    if (typeof scaled[field] === "number") {
+      scaled[field] *= factor;
+    }
+  }
+  return scaled;
+}
 
 function selectSpeed(speed) {
   state.speed = speed;

@@ -6,6 +6,8 @@
 data/
 sandbox/
 
+dev/**/*.html
+
 # -- AIPack
 # Ignore all .aipack files
 *.aipack

@@ -1,5 +1,175 @@
 # Project Spec: rust-poc-sensor-capture
 
+## Process Overview
+
+The diagrams come first. Each one describes a process, its inputs and outputs, and its goal, and the detailed rules for every process follow in the later sections.
+
+The system is two separate programs that share a workspace, a data directory, and a small support crate. `mocker` writes datasets, `simrec` reads one dataset and writes one recording, and the static `report/` page reads both.
+### System Overview
+
+**Goal:** show the running programs, their threads, and the files they exchange.
+
+```mermaid
+flowchart LR
+  subgraph mockerproc["mocker process"]
+    gen["generate dataset<br/>one-second chunks"]
+  end
+  subgraph simrecproc["simrec process"]
+    sim["simrec-sim thread<br/>paced producer"]
+    rec["simrec-rec thread<br/>batched consumer"]
+    smp["simrec-sampler thread<br/>CPU samples"]
+  end
+  mock[("sandbox/mock-data/NAME<br/>ticks.bin, story.jsonl, manifest.json")]
+  captured[("sandbox/captured/NAME-SPEED/BACKEND<br/>recording, capture-metrics.json, cpu-samples.jsonl")]
+  gen -->|"writes"| mock
+  mock -->|"reads"| sim
+  sim -->|"ticks over bounded ring"| rec
+  rec -->|"writes recording"| captured
+  smp -->|"writes cpu-samples.jsonl"| captured
+```
+
+- `mocker` runs once per dataset and exits, and it is the only writer of `mock-data/`.
+
+- `simrec` runs once per replay and writes exactly one backend folder, so one dataset can feed many runs.
+
+- The three `simrec` threads share one process; the sampler never touches the ring, the recorder, or the cancellation flag.
+
+- `report/` is a static browser page, not a running crate, so it appears in the tech stack diagram instead.
+
+### Mocker Generation
+
+**Goal:** write a complete, deterministic dataset whose manifest marks it as finished.
+
+```mermaid
+flowchart LR
+  cli["CLI<br/>duration, seed, start-us, out, rate-hz"] --> story["Story<br/>seeded maneuver segments"]
+  story --> synth["Synthesis<br/>per-tick channel values"]
+  story --> storyfile["story.jsonl<br/>one segment per line"]
+  synth --> ticks["ticks.bin<br/>40-byte records, one-second chunks"]
+  ticks -->|"flush and fsync"| sync["data files durable"]
+  storyfile -->|"flush and fsync"| sync
+  sync --> manifest["manifest.json<br/>published last, completion marker"]
+```
+
+- Story and synthesis use separate seeded ChaCha8 streams, so `story.jsonl` stays byte-identical across synthesis changes.
+
+- Data is streamed in one-second chunks, so memory does not grow with duration.
+
+- `manifest.json` is published last with a non-overwriting hard link, so its presence means the dataset is complete.
+
+- A failure before publication leaves partial output without a manifest.
+
+### simrec Replay Pipeline
+
+**Goal:** replay ticks at the requested pace and record each tick exactly once.
+
+```mermaid
+flowchart LR
+  input["MockInput<br/>validated manifest and ticks.bin"] --> producer["simrec-sim<br/>producer, paced by deadlines"]
+  producer -->|"Vec of at most 1024 ticks"| ring[["bounded SPSC ring<br/>ring-cap messages"]]
+  ring --> consumer["simrec-rec<br/>consumer, batched writes"]
+  consumer -->|"write_batch"| recorder{"Recorder"}
+  recorder --> noop["noop<br/>discards ticks"]
+  recorder --> raw["raw<br/>one segment per hour"]
+  recorder --> sqlite["sqlite<br/>capture.sqlite in WAL mode"]
+  noop --> finish["join both workers<br/>check tick conservation"]
+  raw --> finish
+  sqlite --> finish
+  finish --> metrics["capture-metrics.json<br/>published last"]
+```
+
+- The ring is a named, bounded, single-owner SPSC queue; a full ring returns the owned message instead of dropping it.
+
+- Realtime pacing uses monotonic deadlines, so backpressure turns into lateness, not timestamp drift.
+
+- The producer keeps at most 1024 pending ticks and counts stalls; the consumer flushes by age and, when enabled, by size.
+
+- The sampler never touches the ring, the recorder, or the cancellation flag, and its failure never fails the capture.
+
+- Both workers are joined and tick conservation is checked before `capture-metrics.json` is published.
+
+### Artifacts on Disk
+
+**Goal:** show where a run writes its files and why runs never share a folder.
+
+```mermaid
+flowchart TB
+  sandbox[("sandbox/")]
+  sandbox --> mockroot["mock-data/NAME/"]
+  sandbox --> caproot["captured/NAME-SPEED/"]
+  mockroot --> mockfiles["ticks.bin<br/>story.jsonl<br/>manifest.json"]
+  caproot --> backend["BACKEND/"]
+  backend --> runfiles["recording files<br/>cpu-samples.jsonl<br/>capture-metrics.json"]
+```
+
+- Dataset names encode the requested duration (`dNNN` for whole days, `mNNN` for other spans).
+
+- Run folders add the speed suffix (`real` or `max`), so both speeds of the same dataset and backend can run in parallel.
+
+- Backend folders are `raw`, `sqlite-pk-index`, `sqlite-all-index`, or `noop`.
+
+- Output directories must be new or empty; nothing is removed automatically.
+
+## Tech Stack
+
+The diagram shows how the crates, the browser viewer, and the files on disk fit together.
+
+```mermaid
+flowchart TB
+  subgraph workspace["Rust workspace, edition 2021"]
+    libc["lib-common<br/>crossfire, derive_more, libproc on macOS"]
+    mocker["mocker<br/>clap, serde, serde_json, rand, rand_chacha, simple-fs"]
+    simrec["simrec<br/>clap, tokio, rusqlite bundled, serde, serde_json, simple-fs"]
+  end
+  subgraph viewer["Static browser viewer"]
+    report["report/<br/>HTML, CSS, ES modules, Canvas 2D"]
+  end
+  subgraph files["sandbox/ files"]
+    mockfiles[("mock-data/NAME")]
+    capfiles[("captured/NAME-SPEED")]
+  end
+  mocker -->|"time::now"| libc
+  simrec -->|"event_base and os"| libc
+  mocker -->|"writes"| mockfiles
+  simrec -->|"reads"| mockfiles
+  simrec -->|"writes"| capfiles
+  report -.->|"fetches JSON and JSONL"| mockfiles
+  report -.->|"fetches JSON and JSONL"| capfiles
+```
+
+| Component | Role | Key dependencies |
+| --------- | ---- | ---------------- |
+| `lib-common` | Shared SPSC facade (`event_base`), wall-clock time, macOS CPU sampling | `crossfire`, `derive_more`, `libproc` (macOS target only) |
+| `mocker` | Deterministic mock dataset generator | `lib-common`, `serde`, `serde_json`, `clap`, `simple-fs`, `rand`, `rand_chacha` |
+| `simrec` | Validated replay, capture pipeline, recorders, metrics | `lib-common`, `tokio`, `rusqlite` (bundled), `serde`, `serde_json`, `clap`, `simple-fs`, `derive_more` |
+| `report/` | Static browser viewer, no build step | Plain HTML, CSS, and ES modules, Canvas 2D charts |
+
+- Language and layout:
+
+  - Rust, edition 2021, workspace resolver 3.
+
+  - Three crates in one workspace: `lib-common`, `mocker`, and `simrec`.
+
+  - `report/` is plain static files served beside `sandbox/`, with no bundler and no framework.
+
+- Dependencies and lints:
+
+  - Every dependency is declared once in `[workspace.dependencies]` and consumed with `workspace = true`.
+
+  - `unsafe_code` is forbidden at the workspace level; the only unsafe code lives inside dependencies such as `libproc` and `rusqlite`.
+
+- Storage and platform:
+
+  - SQLite is compiled in through `rusqlite` with the `bundled` feature, so no system SQLite is needed.
+
+  - Raw capture is plain `std::io::BufWriter` over hourly segment files.
+
+  - Per-thread CPU sampling is macOS only, isolated behind `lib_common::os`; other targets report `Error::Unsupported`.
+
+- The on-disk file tree lives in `## Workspace` below.
+
+- The on-disk file tree lives in `## Workspace` below.
+
 ## Purpose
 
 - Compare SQLite WAL capture with append-only raw binary capture for the same quadcopter sensor stream.

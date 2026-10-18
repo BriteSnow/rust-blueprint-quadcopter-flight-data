@@ -126,7 +126,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
-	use crate::recorder::NoopRecorder;
+	use crate::recorder::{CHANNEL_COUNT, NoopRecorder};
 	use lib_common::event_base::{new_spsc_bounded, SyncSpscTx};
 	use std::sync::{Arc, Mutex};
 
@@ -137,11 +137,11 @@ mod tests {
 		let ticks = vec![
 			Tick {
 				epoch_micro: 0,
-				v: [0.0; 5],
+				v: [0.0; CHANNEL_COUNT],
 			},
 			Tick {
 				epoch_micro: 5_000,
-				v: [1.0; 5],
+				v: [1.0; CHANNEL_COUNT],
 			},
 		];
 		queue_ticks(&mut producer, ticks)?;
@@ -192,7 +192,7 @@ mod tests {
 		let (mut producer, consumer) = new_spsc_bounded("rec-batch-limit", 9)?;
 		let tick = Tick {
 			epoch_micro: 0,
-			v: [1.0; 5],
+			v: [1.0; CHANNEL_COUNT],
 		};
 		for _ in 0..8 {
 			queue_ticks(&mut producer, vec![tick; crate::sim::MAX_PENDING_TICKS])?;
@@ -231,7 +231,7 @@ mod tests {
 		let (mut producer, consumer) = new_spsc_bounded("rec-age-only", 1)?;
 		let tick = Tick {
 			epoch_micro: 0,
-			v: [1.0; 5],
+			v: [1.0; CHANNEL_COUNT],
 		};
 		queue_ticks(&mut producer, vec![tick; MAX_BATCH_TICKS + 1])?;
 		let calls = Arc::new(Mutex::new(Vec::new()));
@@ -269,7 +269,7 @@ mod tests {
 			&mut producer,
 			vec![Tick {
 				epoch_micro: 0,
-				v: [1.0; 5],
+				v: [1.0; CHANNEL_COUNT],
 			}],
 		)?;
 		let calls = Arc::new(Mutex::new(Vec::new()));
@@ -307,7 +307,7 @@ mod tests {
 			&mut producer,
 			vec![Tick {
 				epoch_micro: 0,
-				v: [1.0; 5],
+				v: [1.0; CHANNEL_COUNT],
 			}],
 		)?;
 		let calls = Arc::new(Mutex::new(Vec::new()));

@@ -14,6 +14,31 @@ Proof of concept comparing SQLite WAL capture with append-only raw binary captur
 
 - `sandbox/`: mock datasets (`mock-data/`) and captured recordings (`captured/`), not versioned.
 
+## Sensor Channels
+
+A tick is ten little-endian `f32` values, 40 bytes, sampled together at 200 Hz (one tick every 5 ms). The order is fixed: it is the tick order, the manifest order, and the SQLite column order.
+
+| # | Channel        | Unit  | Notes                          |
+| - | -------------- | ----- | ------------------------------ |
+| 0 | `rotor_fl_rpm` | RPM   | front-left                     |
+| 1 | `rotor_fr_rpm` | RPM   | front-right                    |
+| 2 | `rotor_rl_rpm` | RPM   | rear-left                      |
+| 3 | `rotor_rr_rpm` | RPM   | rear-right                     |
+| 4 | `accel_x_mps2` | m/s2  | body forward                   |
+| 5 | `accel_y_mps2` | m/s2  | body left                      |
+| 6 | `accel_z_mps2` | m/s2  | body up, about +9.81 at hover  |
+| 7 | `gyro_x_rads`  | rad/s | roll rate                      |
+| 8 | `gyro_y_rads`  | rad/s | pitch rate                     |
+| 9 | `gyro_z_rads`  | rad/s | yaw rate                       |
+
+The axis convention is body frame FLU: x forward, y left, z up, which matches `accel_z_mps2` reading about +9.81 at hover. Rotation rates are positive by the right-hand rule:
+
+- `gyro_x_rads` > 0 rolls right (right side going down).
+
+- `gyro_y_rads` > 0 pitches nose down.
+
+- `gyro_z_rads` > 0 yaws counterclockwise seen from above (nose turning left).
+
 ## mocker
 
 Generates `ticks.bin`, `story.jsonl`, and `manifest.json` in the output directory.
@@ -47,7 +72,9 @@ Options:
 
 - `--start-us` sets the dataset start in epoch microseconds (positive). Without it, the current time is captured once at generation start.
 
-- `manifest.json` is version 2 and records `start_epoch_us` and `tick_period_us` (5000). Tick timestamps follow `ts_us = start_epoch_us + i * tick_period_us`.
+- `ticks.bin` holds one 40-byte record per tick: ten little-endian `f32` values in channel order.
+
+- `manifest.json` is version 3 and records the ten channels, `bytes_per_tick: 40`, `start_epoch_us`, and `tick_period_us` (5000). Tick timestamps follow `ts_us = start_epoch_us + i * tick_period_us`.
 
 - Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given. The tick data is still identical.
 
@@ -96,13 +123,13 @@ Options:
 
 - Exactly one of `--noop`, `--sql`, or `--raw` is required.
 
-- `--with-index` is opt-in, valid only with `--sql`, and creates one index per sensor channel (`rotor_fl`, `rotor_fr`, `rotor_rl`, `rotor_rr`, `accel_z`). Its output goes to `sqlite-all-index/`, so it can run beside `sqlite-pk-index/` for the same duration.
+- `--with-index` is opt-in, valid only with `--sql`, and creates one index per sensor channel, ten in total, named `idx_samples_<column>`. Its output goes to `sqlite-all-index/`, so it can run beside `sqlite-pk-index/` for the same duration.
 
 - The input is read from `<out>/mock-data/<name>`. Durations up to one day use `d001`, falling back to `d010`; longer durations up to ten days use `d010`. Each run writes to `captured/<name>-<speed>/<backend>/`, using the requested duration name (for example `m001` for `--duration m1`), where `<speed>` is `real` for `--speed real` and `max` for `--speed max`. The replay covers only the requested span from the start of the dataset, so `--duration m1` replays the first 12,000 ticks of `d001`. Real and max runs of the same dataset and backend can run in parallel. Repeating the same run needs its folder removed or moved first, because output directories must be empty.
 
 - `--noop` is a pipeline diagnostic and writes no recording.
 
-- Only version 2 manifests are accepted. Regenerate older datasets with the current mocker.
+- Only version 3 manifests are accepted. Regenerate version 1 and version 2 datasets with the current mocker.
 
 - `--flush-ms` must be positive; `--ring-cap` accepts 1 to 65536 messages.
 
@@ -122,9 +149,9 @@ Options:
 
 - `capture-metrics.json` is published in each backend folder only after successful replay and tick conservation.
 
-- Raw records are 28 bytes: little-endian `i64` `ts_us` (epoch microseconds) followed by five `f32` values.
+- Raw records are 48 bytes: little-endian `i64` `ts_epoch_micro` (epoch microseconds) followed by ten `f32` values. A segment file holds one hour (720,000 ticks), 34,560,000 bytes.
 
-- SQLite table `samples` uses `ts_epoch_micro` (epoch microseconds) as its primary key.
+- SQLite table `samples` uses `ts_epoch_micro` (epoch microseconds) as its primary key, followed by the ten `REAL` channels in tick order.
 
 - Output directories must be new or empty. Nothing is removed automatically.
 
@@ -162,7 +189,9 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 ## Status
 
-- Implemented: mocker, validated replay, no-op, raw, and SQLite backends.
+- Implemented: mocker (10-channel tick), validated replay, no-op, raw, and SQLite backends.
+
+- Datasets and captures from manifest version 2 (20-byte ticks, 5 channels) must be regenerated.
 
 - Dataset generation, end-to-end comparisons, and benchmark measurements are pending. No measured results are claimed.
 

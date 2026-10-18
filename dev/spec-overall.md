@@ -9,19 +9,32 @@
 
 ## Sensor Model
 
-Five channels are sampled together at 200 Hz, one tick every 5 ms.
+Ten channels are sampled together at 200 Hz, one tick every 5 ms. Order is fixed: it is the tick order, the manifest order, and the SQLite column order.
 
-| # | Channel  | Unit | Notes                                       |
-| - | -------- | ---- | ------------------------------------------- |
-| 0 | rotor_fl | RPM  | front-left                                  |
-| 1 | rotor_fr | RPM  | front-right                                 |
-| 2 | rotor_rl | RPM  | rear-left                                   |
-| 3 | rotor_rr | RPM  | rear-right                                  |
-| 4 | accel_z  | m/s2 | vertical acceleration, about 9.81 at hover  |
+| # | Channel        | Unit  | Notes                          |
+| - | -------------- | ----- | ------------------------------ |
+| 0 | `rotor_fl_rpm` | RPM   | front-left                     |
+| 1 | `rotor_fr_rpm` | RPM   | front-right                    |
+| 2 | `rotor_rl_rpm` | RPM   | rear-left                      |
+| 3 | `rotor_rr_rpm` | RPM   | rear-right                     |
+| 4 | `accel_x_mps2` | m/s2  | body forward                   |
+| 5 | `accel_y_mps2` | m/s2  | body left                      |
+| 6 | `accel_z_mps2` | m/s2  | body up, about +9.81 at hover  |
+| 7 | `gyro_x_rads`  | rad/s | roll rate                      |
+| 8 | `gyro_y_rads`  | rad/s | pitch rate                     |
+| 9 | `gyro_z_rads`  | rad/s | yaw rate                       |
 
-- A tick is `[f32; 5]` in little-endian order, 20 bytes.
+- A tick is `[f32; 10]` in little-endian order, 40 bytes.
 - Timestamps are wall-clock epoch microseconds, implicit in the mock input: `ts_us = start_epoch_us + i * tick_period_us`, with `tick_period_us = 5000`.
 - `start_epoch_us` is captured once by the mocker at generation time (never per tick), or set with `--start-us`, and recorded in `manifest.json`.
+
+### Axis Convention
+
+- Body frame FLU: x forward, y left, z up. This matches `accel_z_mps2` reading about +9.81 at hover.
+- Rotation rates are positive by the right-hand rule:
+  - `gyro_x_rads` > 0: rolling right (right side going down).
+  - `gyro_y_rads` > 0: pitching nose down.
+  - `gyro_z_rads` > 0: yawing counterclockwise seen from above (nose turning left).
 
 ## Workspace
 
@@ -79,9 +92,9 @@ dev/                    project rules and specs
 
 ### Output
 
-- `ticks.bin`: headerless little-endian `[f32; 5]` records, 20 bytes per tick.
+- `ticks.bin`: headerless little-endian `[f32; 10]` records, 40 bytes per tick.
 - `story.jsonl`: contiguous half-open `[start_tick, end_tick)` maneuver segments with `maneuver` and `intensity`.
-- `manifest.json`: version 2 completion record, schema below.
+- `manifest.json`: version 3 completion record, schema below.
 - The manifest is written last and is the completion marker.
 - `ticks.bin` and `story.jsonl` carry no timestamps; tick timestamps follow the manifest rule.
 - Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given. The tick data is still identical.
@@ -105,31 +118,36 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "seed": 42,
   "rate_hz": 200,
   "channels": [
-    "rotor_fl",
-    "rotor_fr",
-    "rotor_rl",
-    "rotor_rr",
-    "accel_z"
+    "rotor_fl_rpm",
+    "rotor_fr_rpm",
+    "rotor_rl_rpm",
+    "rotor_rr_rpm",
+    "accel_x_mps2",
+    "accel_y_mps2",
+    "accel_z_mps2",
+    "gyro_x_rads",
+    "gyro_y_rads",
+    "gyro_z_rads"
   ],
   "tick_count": 17280000,
   "start_epoch_us": 1792022400000000,
   "tick_period_us": 5000,
-  "bytes_per_tick": 20
+  "bytes_per_tick": 40
 }
 ```
 
-- `version`: `u32`, currently `2`.
+- `version`: `u32`, currently `3`.
 - `seed`: `u64`, the generator seed.
 - `rate_hz`: `u32`, always `200`.
-- `channels`: array of five strings in tick order.
-- `tick_count`: `u64`, total ticks. `ticks.bin` must be exactly `tick_count * 20` bytes.
+- `channels`: array of ten strings in tick order.
+- `tick_count`: `u64`, total ticks. `ticks.bin` must be exactly `tick_count * 40` bytes.
 - `start_epoch_us`: `i64`, positive, epoch microseconds of the first tick, captured once at generation or set by `--start-us`.
 - `tick_period_us`: `i64`, always `5000`.
-- `bytes_per_tick`: `usize`, always `20`.
+- `bytes_per_tick`: `usize`, always `40`.
 - Tick timestamp rule: `ts_us = start_epoch_us + i * tick_period_us`. `start_epoch_us + tick_count * tick_period_us` must fit in `i64`.
 
 ### Synthesis
@@ -139,6 +157,55 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 - Slow baseline drift, rotor noise, and acceleration ripple.
 - Story and synthesis use separate seeded ChaCha8 streams.
 - Data is streamed in one-second chunks through buffered output. Memory use does not grow with duration.
+
+This is a plausible, simplified model, not a physics simulation. Existing rotor and `accel_z_mps2` behavior is kept.
+
+#### Attitude and Rates
+
+- Synthesis state tracks roll and pitch angles in radians and a yaw rate.
+- Each maneuver sets a target angle. The angle moves to the target with the smoothstep ramp (`segment.ramp_ticks`, 0.5 to 1 s), and back to 0 when the next segment ramps in.
+- `gyro_x_rads` and `gyro_y_rads` are the per-tick derivative of the ramped roll and pitch: `(angle[i] - angle[i - 1]) * 200.0`. Rates are smooth pulses on entry and exit, near zero while the attitude is held, and integrate back to zero when the craft levels out.
+- Yaw is a rate, not an angle: `gyro_z_rads` ramps to a sustained target rate during yaw maneuvers.
+
+#### Maneuver Mapping
+
+`I` is the segment intensity in `[0.2, 1.0]`. Angles are radians (0.35 rad is about 20 degrees), rates are rad/s. `accel_x_mps2` and `accel_y_mps2` follow the same ramp factor as the attitude.
+
+| Maneuver     | Roll target | Pitch target | Yaw rate target | accel_x_mps2 | accel_y_mps2 | Notes                                 |
+| ------------ | ----------- | ------------ | --------------- | ------------ | ------------ | ------------------------------------- |
+| `hover`      | 0           | 0            | 0               | 0            | 0            | baseline only                         |
+| `climb`      | 0           | 0            | 0               | 0            | 0            | existing `accel_z` and rotor behavior |
+| `descend`    | 0           | 0            | 0               | 0            | 0            | existing `accel_z` and rotor behavior |
+| `forward`    | 0           | +0.35*I      | 0               | +2.0*I       | 0            | nose down                             |
+| `backward`   | 0           | -0.35*I      | 0               | -2.0*I       | 0            | nose up                               |
+| `bank_left`  | -0.35*I     | 0            | 0               | 0            | +2.0*I       | left side down                        |
+| `bank_right` | +0.35*I     | 0            | 0               | 0            | -2.0*I       | right side down                       |
+| `yaw_cw`     | 0           | 0            | -0.8*I          | 0            | 0            | nose turning right                    |
+| `yaw_ccw`    | 0           | 0            | +0.8*I          | 0            | 0            | nose turning left                     |
+| `gust`       | random      | random       | random          | burst        | burst        | see Gust                              |
+
+#### Gust
+
+- Short random-direction bursts, shaped by the gust envelope `sin^2(pi * phase)` and scaled by `I`.
+- `accel_x_mps2`, `accel_y_mps2`: random burst amplitude in `[-3.0, +3.0] * I`.
+- `accel_z_mps2`: keeps its existing deterministic gust term (`+3.0 * I * envelope`).
+- `gyro_x_rads`, `gyro_y_rads`: random burst amplitude in `[-1.5, +1.5] * I`, added on top of the attitude derivative.
+- Roll and pitch targets: random in `[-0.1, +0.1] * I` rad.
+- Yaw rate target: random in `[-0.5, +0.5] * I` rad/s.
+- Gust parameters are drawn once per gust segment from the synthesis stream when the segment begins.
+
+#### Noise and Drift
+
+- Accel x/y: Gaussian noise, std 0.05 m/s2.
+- Gyro x/y/z: Gaussian noise, std 0.005 rad/s, plus a slow bias drift per axis bounded to +/-0.002 rad/s. The per-tick random walk step is uniform in `[-2e-6, +2e-6]` rad/s.
+- The existing rotor noise (uniform +/-12) and `accel_z` noise and ripple are kept.
+- Gaussian draws use a local Box-Muller helper over the ChaCha8 synthesis stream, so no extra dependency is needed.
+
+#### Determinism
+
+- All draws come from the seeded synthesis stream, so output is deterministic for the same seed and build.
+- Per-tick draw order: the existing draws first (4 rotors, accel z), then accel x, accel y, gyro bias steps (x, y, z), and gyro noise (x, y, z).
+- The story stream is unchanged, so for a given seed `story.jsonl` stays byte-identical to the previous build. Only the synthesis stream draws more values.
 
 ### Completion
 
@@ -171,10 +238,11 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 
 ### Startup Validation
 
-- Manifest version 2, channel order, 200 Hz, 20-byte records, 5000 us tick period, positive tick count.
-- Version 1 manifests are rejected with an error asking to regenerate the dataset.
+- Manifest version 3, channel order, 200 Hz, 40-byte records, 5000 us tick period, positive tick count.
+- Versions 1 and 2 are rejected with an error asking to regenerate the dataset.
+- `channels` must equal the ten names exactly, in order.
 - Checked payload size. `start_epoch_us` must be positive, and `start_epoch_us + tick_count * tick_period_us` must fit in `i64` (checked arithmetic).
-- `ticks.bin` size must equal `tick_count * 20` exactly.
+- `ticks.bin` size must equal `tick_count * 40` exactly.
 - `manifest.json`, `ticks.bin`, and `story.jsonl` must be regular files. The story is not parsed.
 
 ### Pipeline
@@ -199,8 +267,8 @@ Pretty-printed JSON with a trailing newline. All keys are always present.
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `sandbox/captured/<name>-<speed>/sqlite-pk-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-all-index/capture.sqlite` (the all-index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and five `REAL` channels, plus five secondary indexes, one per channel (`idx_samples_rotor_fl`, `idx_samples_rotor_fr`, `idx_samples_rotor_rl`, `idx_samples_rotor_rr`, `idx_samples_accel_z`), in the all-index variant only. Each nonempty batch is one transaction with a cached prepared statement. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
-- Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 28 bytes: little-endian `i64` `ts_us` (epoch microseconds) followed by five `f32` values. Each segment holds one hour (720,000 ticks), including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
+- SQLite: `sandbox/captured/<name>-<speed>/sqlite-pk-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-all-index/capture.sqlite` (the all-index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and ten `REAL` channels in tick order, plus ten secondary indexes, one per channel (`idx_samples_rotor_fl_rpm` through `idx_samples_gyro_z_rads`), in the all-index variant only. Each nonempty batch is one transaction with a cached prepared statement binding 11 values. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 48 bytes: little-endian `i64` `ts_epoch_micro` (epoch microseconds) followed by ten `f32` values. Each segment holds one hour (720,000 ticks), 34,560,000 bytes, including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling
 
@@ -320,8 +388,11 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 - Done: workspace scaffold, streaming mocker, validated replay, no-op pipeline, raw recording, SQLite WAL recording, README documentation, epoch microsecond timestamps (manifest version 2).
 - Done: SQLite column renamed to `ts_epoch_micro`, tick field renamed to `epoch_micro`.
 - Done: CPU sampling on macOS through `lib-os`, with `cpu-samples.jsonl` output and `--sample-ms`. Tests were reported by the user as passing, not independently rerun.
+- Done: 10-channel tick (4 rotors, 3-axis accelerometer, 3-axis gyroscope) with unit-suffixed channel names, manifest version 3, 40-byte ticks, 48-byte raw records, and an 11-column SQLite table with one index per channel.
+- Done: mocker attitude model (roll, pitch, yaw rate), maneuver mapping, gust bursts, and Gaussian accel and gyro noise with bias drift.
 - Reported by the user as passing: `cargo build`, `cargo test`, and `cargo clippy`. Not independently rerun.
 - Pending: `cargo fmt --all -- --check`, dataset generation, short end-to-end replays, failure-shutdown runtime checks, and the comparison matrix with CPU and RSS measurements.
+- Existing version 2 datasets (20-byte ticks) and 5-channel captures must be regenerated.
 - No benchmark results are claimed yet.
 
 ## Known Limits
@@ -331,7 +402,7 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 - Input files must not change during replay.
 - Floating-point output is reproducible only on the same implementation, dependency set, and platform.
 - Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given.
-- Version 1 datasets and captures with the old `ts_us` column must be regenerated.
+- Version 1 and version 2 datasets and 5-channel captures with the old `ts_us` column must be regenerated.
 - Large ring capacities can consume substantial memory.
 - Sampling is macOS only. Other platforms write one `error` line. Linux (`/proc/self/task/<tid>/stat`) is a later addition behind the same `lib-os` API.
 - Activity after the last sample (up to one interval) is not captured.

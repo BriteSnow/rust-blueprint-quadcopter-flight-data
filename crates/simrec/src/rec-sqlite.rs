@@ -1,3 +1,4 @@
+use crate::mock_in::CHANNELS;
 use crate::recorder::{Recorder, Tick};
 use crate::{Error, Result};
 use rusqlite::{params, Connection};
@@ -5,7 +6,7 @@ use simple_fs::SPath;
 use std::fs::{self, OpenOptions};
 
 const DATABASE_FILENAME: &str = "capture.sqlite";
-const INSERT_SQL: &str = "INSERT INTO samples (ts_epoch_micro, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+const INSERT_SQL: &str = "INSERT INTO samples (ts_epoch_micro, rotor_fl_rpm, rotor_fr_rpm, rotor_rl_rpm, rotor_rr_rpm, accel_x_mps2, accel_y_mps2, accel_z_mps2, gyro_x_rads, gyro_y_rads, gyro_z_rads) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
 
 pub struct SqliteRecorder {
 	connection: Option<Connection>,
@@ -38,16 +39,21 @@ impl SqliteRecorder {
 		connection.execute_batch(
 			"CREATE TABLE samples (
                 ts_epoch_micro INTEGER PRIMARY KEY,
-                rotor_fl REAL,
-                rotor_fr REAL,
-                rotor_rl REAL,
-                rotor_rr REAL,
-                accel_z REAL
+                rotor_fl_rpm REAL,
+                rotor_fr_rpm REAL,
+                rotor_rl_rpm REAL,
+                rotor_rr_rpm REAL,
+                accel_x_mps2 REAL,
+                accel_y_mps2 REAL,
+                accel_z_mps2 REAL,
+                gyro_x_rads REAL,
+                gyro_y_rads REAL,
+                gyro_z_rads REAL
             );",
 		)?;
 
 		if with_index {
-			for column in ["rotor_fl", "rotor_fr", "rotor_rl", "rotor_rr", "accel_z"] {
+			for column in CHANNELS {
 				connection.execute_batch(&format!("CREATE INDEX idx_samples_{column} ON samples ({column});"))?;
 			}
 		}
@@ -112,6 +118,11 @@ impl Recorder for SqliteRecorder {
 					f64::from(tick.v[2]),
 					f64::from(tick.v[3]),
 					f64::from(tick.v[4]),
+					f64::from(tick.v[5]),
+					f64::from(tick.v[6]),
+					f64::from(tick.v[7]),
+					f64::from(tick.v[8]),
+					f64::from(tick.v[9]),
 				])?;
 			}
 		}
@@ -138,6 +149,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
+	use crate::recorder::CHANNEL_COUNT;
 
 	#[test]
 	fn test_rec_sqlite_write_batch_and_finish() -> Result<()> {
@@ -146,11 +158,11 @@ mod tests {
 		let ticks = [
 			Tick {
 				epoch_micro: 0,
-				v: [1.0, 2.0, 3.0, 4.0, 9.81],
+				v: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
 			},
 			Tick {
 				epoch_micro: 5_000,
-				v: [-1.0, -2.0, -3.0, -4.0, 8.5],
+				v: [-1.0, -2.0, -3.0, -4.0, -5.0, -6.0, -7.0, -8.0, -9.0, -10.0],
 			},
 		];
 		let mut recorder = SqliteRecorder::new(&directory, false)?;
@@ -172,31 +184,21 @@ mod tests {
 		assert_eq!(count, ticks.len() as i64);
 
 		for tick in ticks {
-			let stored: (i64, f64, f64, f64, f64, f64) = connection.query_row(
-                "SELECT ts_epoch_micro, rotor_fl, rotor_fr, rotor_rl, rotor_rr, accel_z FROM samples WHERE ts_epoch_micro = ?1",
+			let (stored_ts, stored): (i64, [f64; CHANNEL_COUNT]) = connection.query_row(
+                "SELECT ts_epoch_micro, rotor_fl_rpm, rotor_fr_rpm, rotor_rl_rpm, rotor_rr_rpm, accel_x_mps2, accel_y_mps2, accel_z_mps2, gyro_x_rads, gyro_y_rads, gyro_z_rads FROM samples WHERE ts_epoch_micro = ?1",
                 [tick.epoch_micro],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
+                    let ts_epoch_micro = row.get(0)?;
+                    let mut values = [0.0_f64; CHANNEL_COUNT];
+                    for (index, value) in values.iter_mut().enumerate() {
+                        *value = row.get(index + 1)?;
+                    }
+                    Ok((ts_epoch_micro, values))
                 },
             )?;
-			assert_eq!(stored.0, tick.epoch_micro);
-			assert_eq!(
-				[
-					stored.1 as f32,
-					stored.2 as f32,
-					stored.3 as f32,
-					stored.4 as f32,
-					stored.5 as f32,
-				],
-				tick.v
-			);
+			assert_eq!(stored_ts, tick.epoch_micro);
+			let stored: [f32; CHANNEL_COUNT] = std::array::from_fn(|index| stored[index] as f32);
+			assert_eq!(stored, tick.v);
 		}
 
 		Ok(())
@@ -209,11 +211,11 @@ mod tests {
 		let duplicate_ticks = [
 			Tick {
 				epoch_micro: 0,
-				v: [1.0; 5],
+				v: [1.0; CHANNEL_COUNT],
 			},
 			Tick {
 				epoch_micro: 0,
-				v: [2.0; 5],
+				v: [2.0; CHANNEL_COUNT],
 			},
 		];
 		let mut recorder = SqliteRecorder::new(&directory, false)?;
@@ -261,7 +263,27 @@ mod tests {
 
 		// -- Check
 		assert_eq!(count_sample_indexes(&without_index)?, 0);
-		assert_eq!(count_sample_indexes(&with_index)?, 5);
+		assert_eq!(count_sample_indexes(&with_index)?, CHANNEL_COUNT as i64);
+		Ok(())
+	}
+
+	#[test]
+	fn test_rec_sqlite_new_table_info_columns() -> Result<()> {
+		// -- Setup & Fixtures
+		let directory = fixture_directory("test_rec_sqlite_new_table_info_columns")?;
+
+		// -- Exec
+		Box::new(SqliteRecorder::new(&directory, false)?).finish()?;
+		let connection = Connection::open(directory.join(DATABASE_FILENAME))?;
+		let mut statement = connection.prepare("PRAGMA table_info(samples)")?;
+		let columns: Vec<String> = statement
+			.query_map([], |row| row.get(1))?
+			.collect::<rusqlite::Result<Vec<String>>>()?;
+
+		// -- Check
+		let mut expected = vec!["ts_epoch_micro".to_string()];
+		expected.extend(CHANNELS.map(str::to_string));
+		assert_eq!(columns, expected);
 		Ok(())
 	}
 

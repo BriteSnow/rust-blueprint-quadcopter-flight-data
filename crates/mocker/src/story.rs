@@ -99,3 +99,38 @@ impl Story {
 		Some(segment)
 	}
 }
+
+// region:    --- Tests
+
+#[cfg(test)]
+mod tests {
+	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
+
+	use super::*;
+
+	const FIXTURE_PATH: &str = "tests-data/fixtures/story-seed-42-m010.jsonl";
+	const FIXTURE_TICKS: u64 = 120_000;
+
+	#[test]
+	fn test_story_next_segment_seed_42_fixture() -> Result<()> {
+		// -- Setup & Fixtures
+		// Skips until the fixture is captured from the pre-change build (see plan.md).
+		let Some(expected) = crate::_test_support::opt_fixture_bytes(FIXTURE_PATH)? else {
+			return Ok(());
+		};
+		let mut story = Story::new(42, FIXTURE_TICKS);
+		let mut actual = Vec::new();
+
+		// -- Exec
+		while let Some(segment) = story.next_segment() {
+			serde_json::to_writer(&mut actual, &segment)?;
+			actual.push(b'\n');
+		}
+
+		// -- Check
+		assert_eq!(actual, expected);
+		Ok(())
+	}
+}
+
+// endregion: --- Tests

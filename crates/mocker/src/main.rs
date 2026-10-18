@@ -7,7 +7,10 @@ mod story;
 mod synth;
 mod writer;
 
-pub(crate) use constants::{BYTES_PER_TICK, CHANNELS, RATE_HZ, TICK_NS};
+#[cfg(test)]
+mod _test_support;
+
+pub(crate) use constants::{BYTES_PER_TICK, CHANNEL_COUNT, CHANNELS, RATE_HZ, TICK_NS};
 
 // endregion: --- Modules
 

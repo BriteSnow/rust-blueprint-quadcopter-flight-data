@@ -89,6 +89,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
+	use crate::recorder::CHANNEL_COUNT;
 	use lib_common::event_base::new_spsc_bounded;
 
 	#[test]
@@ -97,7 +98,7 @@ mod tests {
 		let (mut producer, mut consumer) = new_spsc_bounded("sim-test", 1)?;
 		let tick = Tick {
 			epoch_micro: 0,
-			v: [1.0; 5],
+			v: [1.0; CHANNEL_COUNT],
 		};
 		let mut stats = ProducerStats::default();
 

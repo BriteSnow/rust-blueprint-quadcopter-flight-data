@@ -5,6 +5,7 @@ mod test_cases {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use crate::app::*;
+	use crate::recorder::CHANNEL_COUNT;
 	use crate::sampler::{CpuSource, SamplerSetup, CPU_SAMPLES_FILE_NAME};
 	use crate::sim::ReplaySpeed;
 	use crate::{mock_in, recorder, sim};
@@ -304,7 +305,8 @@ mod test_cases {
 	fn test_main_replay_workers_raw_timestamps() -> Result<()> {
 		// -- Setup & Fixtures
 		let tick_count = 2_000_u64;
-		let input = fixture_input("test_main_replay_workers_raw_timestamps", tick_count)?;
+		let dataset = fixture_dataset("test_main_replay_workers_raw_timestamps", tick_count)?;
+		let input = MockInput::open(&dataset)?;
 		let out = fixture_directory("test_main_replay_workers_raw_timestamps_out")?;
 
 		// -- Exec
@@ -318,13 +320,17 @@ mod test_cases {
 			None,
 		)?;
 		let bytes = fs::read(out.join("seg-000000.bin"))?;
+		let ticks = fs::read(dataset.join("ticks.bin"))?;
 
 		// -- Check
 		assert_eq!(recorded.ticks_total, tick_count);
-		assert_eq!(bytes.len() as u64, tick_count * 28);
+		assert_eq!(bytes.len() as u64, tick_count * RAW_RECORD_BYTES as u64);
 		let first = bytes.get(..8).ok_or("expected a first record")?;
 		assert_eq!(i64::from_le_bytes(first.try_into()?), FIXTURE_START_US);
-		for (index, record) in bytes.as_chunks::<28>().0.iter().enumerate() {
+		let first_payload = bytes.get(8..RAW_RECORD_BYTES).ok_or("expected a first record payload")?;
+		let first_tick = ticks.get(..TICK_BYTES).ok_or("expected a first input tick")?;
+		assert_eq!(first_payload, first_tick);
+		for (index, record) in bytes.as_chunks::<RAW_RECORD_BYTES>().0.iter().enumerate() {
 			let ts_us = i64::from_le_bytes(record[..8].try_into()?);
 			assert_eq!(ts_us, FIXTURE_START_US + index as i64 * mock_in::TICK_PERIOD_US);
 		}
@@ -335,7 +341,8 @@ mod test_cases {
 	fn test_main_replay_workers_sqlite_timestamps() -> Result<()> {
 		// -- Setup & Fixtures
 		let tick_count = 2_000_u64;
-		let input = fixture_input("test_main_replay_workers_sqlite_timestamps", tick_count)?;
+		let dataset = fixture_dataset("test_main_replay_workers_sqlite_timestamps", tick_count)?;
+		let input = MockInput::open(&dataset)?;
 		let out = fixture_directory("test_main_replay_workers_sqlite_timestamps_out")?;
 
 		// -- Exec
@@ -354,6 +361,24 @@ mod test_cases {
 			[],
 			|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
 		)?;
+		let first_values: [f64; CHANNEL_COUNT] = connection.query_row(
+			"SELECT rotor_fl_rpm, rotor_fr_rpm, rotor_rl_rpm, rotor_rr_rpm, accel_x_mps2, accel_y_mps2, accel_z_mps2, gyro_x_rads, gyro_y_rads, gyro_z_rads FROM samples WHERE ts_epoch_micro = ?1",
+			[FIXTURE_START_US],
+			|row| {
+				let mut values = [0.0_f64; CHANNEL_COUNT];
+				for (index, value) in values.iter_mut().enumerate() {
+					*value = row.get(index)?;
+				}
+				Ok(values)
+			},
+		)?;
+		let ticks = fs::read(dataset.join("ticks.bin"))?;
+		let first_tick = ticks.get(..TICK_BYTES).ok_or("expected a first input tick")?;
+		let mut expected = [0.0_f32; CHANNEL_COUNT];
+		for (channel, value) in expected.iter_mut().enumerate() {
+			let start = channel * 4;
+			*value = f32::from_le_bytes(first_tick[start..start + 4].try_into()?);
+		}
 
 		// -- Check
 		assert_eq!(recorded.ticks_total, tick_count);
@@ -363,6 +388,8 @@ mod test_cases {
 			max_ts_us,
 			FIXTURE_START_US + (tick_count as i64 - 1) * mock_in::TICK_PERIOD_US
 		);
+		let actual: [f32; CHANNEL_COUNT] = std::array::from_fn(|channel| first_values[channel] as f32);
+		assert_eq!(actual, expected);
 		Ok(())
 	}
 
@@ -465,6 +492,8 @@ mod test_cases {
 	// -- Test Support
 
 	const FIXTURE_START_US: i64 = 1_792_022_400_000_000;
+	const TICK_BYTES: usize = CHANNEL_COUNT * 4;
+	const RAW_RECORD_BYTES: usize = 8 + TICK_BYTES;
 
 	#[derive(Default)]
 	struct Observed {
@@ -495,7 +524,10 @@ mod test_cases {
 			for tick in ticks {
 				let index = observed.ticks;
 				if tick.epoch_micro != FIXTURE_START_US + index as i64 * mock_in::TICK_PERIOD_US
-					|| tick.v != [index as f32; 5]
+					|| tick.v
+						!= std::array::from_fn(|channel| {
+							(index * CHANNEL_COUNT as u64 + channel as u64) as f32
+						})
 				{
 					return Err(Error::custom("recorded tick order or values changed"));
 				}
@@ -536,10 +568,10 @@ mod test_cases {
 	fn fixture_dataset(test_name: &str, tick_count: u64) -> Result<SPath> {
 		let directory = fixture_directory(test_name)?;
 		let manifest = serde_json::json!({
-			"version": 2,
+			"version": 3,
 			"seed": 42,
 			"rate_hz": 200,
-			"channels": ["rotor_fl", "rotor_fr", "rotor_rl", "rotor_rr", "accel_z"],
+			"channels": mock_in::CHANNELS,
 			"tick_count": tick_count,
 			"start_epoch_us": FIXTURE_START_US,
 			"tick_period_us": mock_in::TICK_PERIOD_US,
@@ -548,8 +580,9 @@ mod test_cases {
 		fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
 		let mut output = std::io::BufWriter::new(fs::File::create(directory.join("ticks.bin"))?);
 		for index in 0..tick_count {
-			for _ in 0..5 {
-				std::io::Write::write_all(&mut output, &(index as f32).to_le_bytes())?;
+			for channel in 0..CHANNEL_COUNT {
+				let value = (index * CHANNEL_COUNT as u64 + channel as u64) as f32;
+				std::io::Write::write_all(&mut output, &value.to_le_bytes())?;
 			}
 		}
 		std::io::Write::flush(&mut output)?;

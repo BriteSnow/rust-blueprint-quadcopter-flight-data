@@ -1,4 +1,4 @@
-use crate::recorder::Tick;
+use crate::recorder::{Tick, CHANNEL_COUNT};
 use crate::{Error, Result};
 use serde::Deserialize;
 use simple_fs::SPath;
@@ -15,9 +15,20 @@ pub struct MockInput {
 
 pub const TICK_NS: u64 = 5_000_000;
 pub const TICK_PERIOD_US: i64 = 5_000;
-pub const BYTES_PER_TICK: u64 = 20;
-const MANIFEST_VERSION: u32 = 2;
-const CHANNELS: [&str; 5] = ["rotor_fl", "rotor_fr", "rotor_rl", "rotor_rr", "accel_z"];
+pub const BYTES_PER_TICK: u64 = CHANNEL_COUNT as u64 * 4;
+const MANIFEST_VERSION: u32 = 3;
+pub const CHANNELS: [&str; CHANNEL_COUNT] = [
+	"rotor_fl_rpm",
+	"rotor_fr_rpm",
+	"rotor_rl_rpm",
+	"rotor_rr_rpm",
+	"accel_x_mps2",
+	"accel_y_mps2",
+	"accel_z_mps2",
+	"gyro_x_rads",
+	"gyro_y_rads",
+	"gyro_z_rads",
+];
 
 impl MockInput {
 	pub fn open(directory: &SPath) -> Result<Self> {
@@ -135,7 +146,7 @@ fn validate_manifest(manifest: &Manifest, actual_bytes: u64) -> Result<()> {
 	if manifest.rate_hz != 200 || manifest.bytes_per_tick != BYTES_PER_TICK || manifest.tick_period_us != TICK_PERIOD_US
 	{
 		return Err(Error::custom(
-			"input must contain 200 Hz, 20-byte ticks with a 5000 us tick period",
+			"input must contain 200 Hz, 40-byte ticks with a 5000 us tick period",
 		));
 	}
 	if manifest.channels.len() != CHANNELS.len()
@@ -176,8 +187,8 @@ fn timestamp(manifest: &Manifest, index: u64) -> Result<i64> {
 	i64::try_from(timestamp).map_err(|_| Error::custom("manifest timestamps exceed the signed 64-bit range"))
 }
 
-fn decode_tick(bytes: &[u8; 20], ts_us: i64) -> Result<Tick> {
-	let mut values = [0.0_f32; 5];
+fn decode_tick(bytes: &[u8; BYTES_PER_TICK as usize], ts_us: i64) -> Result<Tick> {
+	let mut values = [0.0_f32; CHANNEL_COUNT];
 	for (index, value) in values.iter_mut().enumerate() {
 		let start = index * 4;
 		*value = f32::from_le_bytes([bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3]]);
@@ -209,7 +220,7 @@ mod tests {
 		let manifest = fixture_manifest();
 
 		// -- Exec
-		validate_manifest(&manifest, 40)?;
+		validate_manifest(&manifest, 2 * BYTES_PER_TICK)?;
 		let last = timestamp(&manifest, 1)?;
 
 		// -- Check
@@ -223,20 +234,45 @@ mod tests {
 		let mut manifest = fixture_manifest();
 
 		// -- Exec & Check
-		assert!(validate_manifest(&manifest, 39).is_err());
+		assert!(validate_manifest(&manifest, 2 * BYTES_PER_TICK - 1).is_err());
 		manifest.channels.swap(0, 1);
-		assert!(validate_manifest(&manifest, 40).is_err());
+		assert!(validate_manifest(&manifest, 2 * BYTES_PER_TICK).is_err());
 		manifest.channels.swap(0, 1);
 		manifest.start_epoch_us = i64::MAX;
-		assert!(validate_manifest(&manifest, 40).is_err());
+		assert!(validate_manifest(&manifest, 2 * BYTES_PER_TICK).is_err());
 		manifest.start_epoch_us = 0;
-		assert!(validate_manifest(&manifest, 40).is_err());
+		assert!(validate_manifest(&manifest, 2 * BYTES_PER_TICK).is_err());
 		manifest.start_epoch_us = FIXTURE_START_US;
 		manifest.tick_period_us = 1_000;
-		assert!(validate_manifest(&manifest, 40).is_err());
+		assert!(validate_manifest(&manifest, 2 * BYTES_PER_TICK).is_err());
 		manifest.tick_period_us = TICK_PERIOD_US;
 		manifest.tick_count = 0;
 		assert!(validate_manifest(&manifest, 0).is_err());
+		Ok(())
+	}
+
+	#[test]
+	fn test_mock_in_validate_manifest_rejects_v2_layout() -> Result<()> {
+		// -- Setup & Fixtures
+		let mut manifest = fixture_manifest();
+		let legacy_channels = manifest.channels[..5].to_vec();
+
+		// -- Exec
+		manifest.channels = legacy_channels;
+		let wrong_channels = validate_manifest(&manifest, 2 * BYTES_PER_TICK);
+		manifest.channels = CHANNELS.map(str::to_string).into();
+		manifest.bytes_per_tick = 20;
+		let wrong_tick_size = validate_manifest(&manifest, 2 * BYTES_PER_TICK);
+
+		// -- Check
+		let error = wrong_channels
+			.err()
+			.ok_or("expected old channel list rejection")?;
+		assert!(error.to_string().contains("channel order"));
+		let error = wrong_tick_size
+			.err()
+			.ok_or("expected old tick size rejection")?;
+		assert!(error.to_string().contains("40-byte ticks"));
 		Ok(())
 	}
 
@@ -249,8 +285,8 @@ mod tests {
 		boundary.start_epoch_us = i64::MAX - 2 * TICK_PERIOD_US;
 
 		// -- Exec
-		let overflow_result = validate_manifest(&overflowing, 40);
-		let boundary_result = validate_manifest(&boundary, 40);
+		let overflow_result = validate_manifest(&overflowing, 2 * BYTES_PER_TICK);
+		let boundary_result = validate_manifest(&boundary, 2 * BYTES_PER_TICK);
 
 		// -- Check
 		let error = overflow_result.err().ok_or("expected timestamp overflow rejection")?;
@@ -271,7 +307,7 @@ mod tests {
 			"tick_count": 2,
 			"start_epoch_us": FIXTURE_START_US,
 			"tick_period_us": TICK_PERIOD_US,
-			"bytes_per_tick": 20
+			"bytes_per_tick": BYTES_PER_TICK
 		});
 		std::fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
 
@@ -287,10 +323,30 @@ mod tests {
 	}
 
 	#[test]
+	fn test_mock_in_open_rejects_version_2() -> Result<()> {
+		// -- Setup & Fixtures
+		let directory = fixture_directory("test_mock_in_open_rejects_version_2")?;
+		let mut manifest: serde_json::Value =
+			serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
+		manifest["version"] = serde_json::json!(2);
+		std::fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
+
+		// -- Exec
+		let result = MockInput::open(&directory);
+
+		// -- Check
+		let error = result.err().ok_or("expected version 2 rejection")?;
+		let message = error.to_string();
+		assert!(message.contains("manifest version 2 is not supported"));
+		assert!(message.contains("regenerate"));
+		Ok(())
+	}
+
+	#[test]
 	fn test_mock_in_decode_tick_little_endian() -> Result<()> {
 		// -- Setup & Fixtures
-		let values = [1.0_f32, -2.0, 3.5, 4.0, 9.81];
-		let mut bytes = [0_u8; 20];
+		let values = [1.0_f32, -2.0, 3.5, 4.0, 9.81, -6.0, 7.0, 8.0, -9.0, 10.0];
+		let mut bytes = [0_u8; BYTES_PER_TICK as usize];
 		for (index, value) in values.into_iter().enumerate() {
 			bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
 		}
@@ -311,8 +367,8 @@ mod tests {
 
 		// -- Exec & Check
 		for value in invalid_values {
-			for channel in 0..5 {
-				let mut bytes = [0_u8; 20];
+			for channel in 0..CHANNEL_COUNT {
+				let mut bytes = [0_u8; BYTES_PER_TICK as usize];
 				bytes[channel * 4..channel * 4 + 4].copy_from_slice(&value.to_le_bytes());
 				let error = decode_tick(&bytes, 123).err().ok_or("expected decoding failure")?;
 				let message = error.to_string();
@@ -337,9 +393,9 @@ mod tests {
 		// -- Check
 		assert_eq!(input.tick_count(), 2);
 		assert_eq!(first.epoch_micro, FIXTURE_START_US);
-		assert_eq!(first.v, [1.0_f32, 2.0, 3.0, 4.0, 9.81]);
+		assert_eq!(first.v, [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
 		assert_eq!(second.epoch_micro, FIXTURE_START_US + TICK_PERIOD_US);
-		assert_eq!(second.v, [5.0_f32; 5]);
+		assert_eq!(second.v, [5.0_f32; CHANNEL_COUNT]);
 		assert!(end.is_none());
 		Ok(())
 	}
@@ -385,7 +441,7 @@ mod tests {
 		let directory = fixture_directory("test_mock_in_next_tick_truncated_after_open")?;
 		let mut input = MockInput::open(&directory)?;
 		let file = std::fs::OpenOptions::new().write(true).open(directory.join("ticks.bin"))?;
-		file.set_len(19)?;
+		file.set_len(BYTES_PER_TICK - 1)?;
 
 		// -- Exec
 		let result = input.next_tick();
@@ -430,18 +486,21 @@ mod tests {
 		let directory = parent.join(format!("{}-{unique}", std::process::id()));
 		std::fs::create_dir(&directory)?;
 		let manifest = serde_json::json!({
-			"version": 2,
+			"version": 3,
 			"seed": 42,
 			"rate_hz": 200,
 			"channels": CHANNELS,
 			"tick_count": 2,
 			"start_epoch_us": FIXTURE_START_US,
 			"tick_period_us": TICK_PERIOD_US,
-			"bytes_per_tick": 20
+			"bytes_per_tick": BYTES_PER_TICK
 		});
 		std::fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
-		let mut bytes = Vec::with_capacity(40);
-		for values in [[1.0_f32, 2.0, 3.0, 4.0, 9.81], [5.0_f32; 5]] {
+		let mut bytes = Vec::with_capacity(2 * BYTES_PER_TICK as usize);
+		for values in [
+			[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+			[5.0_f32; CHANNEL_COUNT],
+		] {
 			for value in values {
 				bytes.extend_from_slice(&value.to_le_bytes());
 			}
@@ -460,7 +519,7 @@ mod tests {
 			tick_count: 2,
 			start_epoch_us: FIXTURE_START_US,
 			tick_period_us: TICK_PERIOD_US,
-			bytes_per_tick: 20,
+			bytes_per_tick: BYTES_PER_TICK,
 		}
 	}
 }

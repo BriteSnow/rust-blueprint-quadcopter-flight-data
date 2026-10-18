@@ -1,10 +1,10 @@
-use crate::recorder::{Recorder, Tick};
+use crate::recorder::{Recorder, Tick, CHANNEL_COUNT};
 use crate::{Error, Result};
 use simple_fs::SPath;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 
-const RECORD_BYTES: usize = 28;
+const RECORD_BYTES: usize = 8 + CHANNEL_COUNT * 4;
 const TICKS_PER_SEGMENT: u64 = 3_600 * 200;
 const BUFFER_CAPACITY: usize = 1_048_576;
 
@@ -112,7 +112,7 @@ mod tests {
 		let directory = fixture_directory("test_rec_raw_write_little_endian_record_simple")?;
 		let tick = Tick {
 			epoch_micro: -5,
-			v: [1.0, -2.0, 3.5, 4.0, 9.81],
+			v: [1.0, -2.0, 3.5, 4.0, 9.81, -6.0, 0.5, -1.25, 2.75, -0.125],
 		};
 		let mut expected = tick.epoch_micro.to_le_bytes().to_vec();
 		for value in tick.v {
@@ -137,7 +137,7 @@ mod tests {
 		let directory = fixture_directory("test_rec_raw_rolls_segment_inside_batch")?;
 		let tick = Tick {
 			epoch_micro: 0,
-			v: [1.0; 5],
+			v: [1.0; CHANNEL_COUNT],
 		};
 		let mut recorder = RawRecorder::new(&directory);
 		let batch = vec![tick; 8192];

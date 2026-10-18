@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::story::Story;
 use crate::synth::Synth;
-use crate::{BYTES_PER_TICK, CHANNELS, RATE_HZ};
+use crate::{BYTES_PER_TICK, CHANNEL_COUNT, CHANNELS, RATE_HZ};
 use serde::Serialize;
 use simple_fs::SPath;
 use std::fs::{self, File, OpenOptions};
@@ -9,7 +9,7 @@ use std::io::{BufWriter, Write};
 
 const CHUNK_TICKS: usize = RATE_HZ as usize;
 const HOUR_TICKS: u64 = 3_600 * RATE_HZ as u64;
-const MANIFEST_VERSION: u32 = 2;
+const MANIFEST_VERSION: u32 = 3;
 const TICK_PERIOD_US: i64 = 5_000;
 
 #[derive(Serialize)]
@@ -17,7 +17,7 @@ struct Manifest {
 	version: u32,
 	seed: u64,
 	rate_hz: u32,
-	channels: [&'static str; 5],
+	channels: [&'static str; CHANNEL_COUNT],
 	tick_count: u64,
 	start_epoch_us: i64,
 	tick_period_us: i64,
@@ -48,7 +48,7 @@ pub fn generate(out: &SPath, seed: u64, tick_count: u64, start_epoch_us: i64) ->
 	while let Some(segment) = story.next_segment() {
 		serde_json::to_writer(&mut story_output, &segment)?;
 		story_output.write_all(b"\n")?;
-		synth.begin_segment();
+		synth.begin_segment(&segment);
 		let mut tick = segment.start_tick;
 		while tick < segment.end_tick {
 			let until_hour = HOUR_TICKS - written % HOUR_TICKS;
@@ -142,7 +142,11 @@ mod tests {
 		let manifest: serde_json::Value = serde_json::from_slice(&fs::read(out.join("manifest.json"))?)?;
 
 		// -- Check
-		assert_eq!(manifest["version"], 2);
+		let channels = manifest["channels"].as_array().ok_or("channels should be an array")?;
+		let actual_channels: Vec<&str> = channels.iter().filter_map(|value| value.as_str()).collect();
+		assert_eq!(manifest["version"], 3);
+		assert_eq!(manifest["bytes_per_tick"], BYTES_PER_TICK);
+		assert_eq!(actual_channels, CHANNELS);
 		assert_eq!(manifest["start_epoch_us"], 1_000);
 		assert_eq!(manifest["tick_period_us"], 5_000);
 		assert_eq!(manifest["tick_count"], tick_count);
@@ -172,7 +176,28 @@ mod tests {
 		Ok(())
 	}
 
+	#[test]
+	fn test_writer_generate_story_matches_fixture() -> Result<()> {
+		// -- Setup & Fixtures
+		// Skips until the fixture is captured from the pre-change build (see plan.md).
+		let Some(expected) = crate::_test_support::opt_fixture_bytes(STORY_FIXTURE)? else {
+			return Ok(());
+		};
+		let out = fixture_directory("test_writer_generate_story_matches_fixture")?.join("dataset");
+
+		// -- Exec
+		generate(&out, 42, 120_000, 1_792_022_400_000_000)?;
+		let actual = fs::read(out.join("story.jsonl"))?;
+
+		// -- Check
+		assert_eq!(actual.len(), expected.len());
+		assert_eq!(actual, expected);
+		Ok(())
+	}
+
 	// -- Test Support
+
+	const STORY_FIXTURE: &str = "tests-data/fixtures/story-seed-42-m010.jsonl";
 
 	fn fixture_directory(test_name: &str) -> Result<SPath> {
 		let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();

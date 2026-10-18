@@ -6,8 +6,6 @@ Proof of concept comparing SQLite WAL capture with append-only raw binary captur
 
 - `crates/lib-common/`: shared named, bounded SPSC facade.
 
-- `crates/lib-os/`: per-thread and process CPU and RSS sampling (macOS only).
-
 - `crates/mocker/`: deterministic mock dataset generator.
 
 - `crates/simrec/`: replay pipeline, recording backends, and metrics.
@@ -183,7 +181,7 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 - Cancellation cannot interrupt a blocked file read or recorder call.
 
-- CPU sampling is macOS only. Other platforms write one `error` line and sampling stops.
+- CPU sampling lives in `lib-common` (`lib_common::os`) and is macOS only. Other platforms write one `error` line and sampling stops.
 
 - Activity after the last sample (up to one interval) is not captured.
 

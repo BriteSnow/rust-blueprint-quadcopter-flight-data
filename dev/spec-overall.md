@@ -43,8 +43,7 @@ Cargo.toml              workspace, shared dependencies, lints, profiles
 README.md               usage, formats, limitations, comparison procedure
 .gitignore              sandbox/
 crates/
-  lib-common/           shared named bounded SPSC facade (event_base)
-  lib-os/               per-thread and process CPU and RSS sampling (macOS)
+  lib-common/           shared named bounded SPSC facade (event_base), os sampling, time
   mocker/               deterministic mock dataset generator
   simrec/               validated replay, pipeline, recorders, metrics
 sandbox/                generated mock datasets and captures (not versioned)
@@ -66,9 +65,9 @@ dev/                    project rules and specs
 - Errors: `InvalidCapacity`, `TxDisconnected`, `RxDisconnected`, with `is_disconnected()`.
 - Provides `time::now() -> i64`, the current wall-clock time in epoch microseconds, saturating and negative before the epoch.
 
-## Crate: lib-os
+### Module: lib-common::os
 
-- Provides per-thread and process CPU time and RSS on macOS through the `libproc` crate (safe API over `proc_pidinfo`). The unsafe code stays inside the dependency.
+- Provides per-thread and process CPU time and RSS on macOS through the `libproc` crate (safe API over `proc_pidinfo`), wired as a macOS-only target dependency. The unsafe code stays inside the dependency.
 - `thread_cpu_all(pid) -> Result<Vec<ThreadCpu>>` lists the threads with `ListThreads`, then reads `ThreadInfo` for each. A thread that exits before it is read is skipped.
 - `process_stats(pid) -> Result<ProcessStats>` reads `TaskAllInfo`. The task CPU totals only include exited threads, so the live thread times are added.
 - `ThreadCpu` holds `thread_handle: u64` (kernel handle, stable while the thread lives), `name: String` (empty if unnamed), `user_ns`, `system_ns`, and `sched_usage: f32` (`pth_cpu_usage / 10.0`, percent of one core).

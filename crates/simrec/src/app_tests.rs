@@ -551,12 +551,12 @@ mod test_cases {
 	struct FailingSource;
 
 	impl CpuSource for FailingSource {
-		fn threads(&mut self) -> lib_os::Result<Vec<lib_os::ThreadCpu>> {
-			Err(lib_os::Error::Unsupported)
+		fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>> {
+			Err(lib_common::os::Error::Unsupported)
 		}
 
-		fn process(&mut self) -> lib_os::Result<lib_os::ProcessStats> {
-			Err(lib_os::Error::Unsupported)
+		fn process(&mut self) -> lib_common::os::Result<lib_common::os::ProcessStats> {
+			Err(lib_common::os::Error::Unsupported)
 		}
 	}
 

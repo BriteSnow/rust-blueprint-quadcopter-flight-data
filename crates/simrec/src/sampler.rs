@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 pub const CPU_SAMPLES_FILE_NAME: &str = "cpu-samples.jsonl";
 
 pub trait CpuSource: Send {
-	fn threads(&mut self) -> lib_os::Result<Vec<lib_os::ThreadCpu>>;
-	fn process(&mut self) -> lib_os::Result<lib_os::ProcessStats>;
+	fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>>;
+	fn process(&mut self) -> lib_common::os::Result<lib_common::os::ProcessStats>;
 }
 
 pub struct OsCpuSource {
@@ -31,12 +31,12 @@ impl OsCpuSource {
 }
 
 impl CpuSource for OsCpuSource {
-	fn threads(&mut self) -> lib_os::Result<Vec<lib_os::ThreadCpu>> {
-		lib_os::thread_cpu_all(self.pid)
+	fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>> {
+		lib_common::os::thread_cpu_all(self.pid)
 	}
 
-	fn process(&mut self) -> lib_os::Result<lib_os::ProcessStats> {
-		lib_os::process_stats(self.pid)
+	fn process(&mut self) -> lib_common::os::Result<lib_common::os::ProcessStats> {
+		lib_common::os::process_stats(self.pid)
 	}
 }
 
@@ -135,7 +135,7 @@ impl SamplerState {
 		source: &mut dyn CpuSource,
 		now: Instant,
 		ts_epoch_us: i64,
-	) -> lib_os::Result<Vec<SampleLine>> {
+	) -> lib_common::os::Result<Vec<SampleLine>> {
 		let threads = source.threads()?;
 		let process = source.process()?;
 
@@ -200,7 +200,7 @@ fn cpu_pct(prev: Option<u64>, current: u64, interval: Option<Duration>) -> Optio
 	Some(current.saturating_sub(prev) as f64 / interval.as_nanos() as f64 * 100.0)
 }
 
-fn thread_label(thread: &lib_os::ThreadCpu) -> String {
+fn thread_label(thread: &lib_common::os::ThreadCpu) -> String {
 	if thread.name.is_empty() {
 		format!("tid-{}", thread.thread_handle)
 	} else {
@@ -298,7 +298,7 @@ mod tests {
 		let stop = AtomicBool::new(false);
 		let buf = SharedBuf::default();
 		let mut source = FakeSource::default();
-		source.thread_script.push_back(Err(lib_os::Error::Unsupported));
+		source.thread_script.push_back(Err(lib_common::os::Error::Unsupported));
 		let setup = SamplerSetup {
 			source: Box::new(source),
 			writer: Box::new(buf.clone()),
@@ -340,17 +340,17 @@ mod tests {
 
 	#[derive(Default)]
 	struct FakeSource {
-		thread_script: VecDeque<lib_os::Result<Vec<lib_os::ThreadCpu>>>,
-		process_script: VecDeque<lib_os::Result<lib_os::ProcessStats>>,
+		thread_script: VecDeque<lib_common::os::Result<Vec<lib_common::os::ThreadCpu>>>,
+		process_script: VecDeque<lib_common::os::Result<lib_common::os::ProcessStats>>,
 	}
 
 	impl CpuSource for FakeSource {
-		fn threads(&mut self) -> lib_os::Result<Vec<lib_os::ThreadCpu>> {
-			self.thread_script.pop_front().unwrap_or(Err(lib_os::Error::Unsupported))
+		fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>> {
+			self.thread_script.pop_front().unwrap_or(Err(lib_common::os::Error::Unsupported))
 		}
 
-		fn process(&mut self) -> lib_os::Result<lib_os::ProcessStats> {
-			self.process_script.pop_front().unwrap_or(Err(lib_os::Error::Unsupported))
+		fn process(&mut self) -> lib_common::os::Result<lib_common::os::ProcessStats> {
+			self.process_script.pop_front().unwrap_or(Err(lib_common::os::Error::Unsupported))
 		}
 	}
 
@@ -371,8 +371,8 @@ mod tests {
 		}
 	}
 
-	fn make_thread(name: &str, thread_handle: u64, user_ns: u64) -> lib_os::ThreadCpu {
-		lib_os::ThreadCpu {
+	fn make_thread(name: &str, thread_handle: u64, user_ns: u64) -> lib_common::os::ThreadCpu {
+		lib_common::os::ThreadCpu {
 			thread_handle,
 			name: name.to_string(),
 			user_ns,
@@ -381,8 +381,8 @@ mod tests {
 		}
 	}
 
-	fn make_process(user_ns: u64) -> lib_os::ProcessStats {
-		lib_os::ProcessStats {
+	fn make_process(user_ns: u64) -> lib_common::os::ProcessStats {
+		lib_common::os::ProcessStats {
 			user_ns,
 			system_ns: 0,
 			rss_bytes: 0,

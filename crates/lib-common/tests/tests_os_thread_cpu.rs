@@ -11,7 +11,7 @@ fn test_cpu_thread_cpu_all_named_thread() -> Result<()> {
 	})?;
 
 	// -- Exec
-	let threads = lib_os::thread_cpu_all(std::process::id() as i32)?;
+	let threads = lib_common::os::thread_cpu_all(std::process::id() as i32)?;
 
 	// -- Check
 	let found = threads.iter().any(|thread| thread.name == "lib-os-named");
@@ -27,7 +27,7 @@ fn test_cpu_thread_cpu_all_named_thread() -> Result<()> {
 #[test]
 fn test_cpu_process_stats_rss_positive() -> Result<()> {
 	// -- Exec
-	let stats = lib_os::process_stats(std::process::id() as i32)?;
+	let stats = lib_common::os::process_stats(std::process::id() as i32)?;
 
 	// -- Check
 	assert!(stats.rss_bytes > 0, "process rss should be positive");
@@ -64,11 +64,11 @@ fn test_cpu_thread_cpu_all_busy_spin_one_second() -> Result<()> {
 fn test_cpu_process_stats_busy_spin_delta() -> Result<()> {
 	// -- Setup & Fixtures
 	let pid = std::process::id() as i32;
-	let before = lib_os::process_stats(pid)?;
+	let before = lib_common::os::process_stats(pid)?;
 
 	// -- Exec
 	spin_for(std::time::Duration::from_secs(1));
-	let after = lib_os::process_stats(pid)?;
+	let after = lib_common::os::process_stats(pid)?;
 
 	// -- Check
 	let before_ns = before.user_ns + before.system_ns;
@@ -93,7 +93,7 @@ fn spin_for(duration: std::time::Duration) {
 }
 
 fn thread_cpu_total_ns(pid: i32, name: &str) -> core::result::Result<u64, String> {
-	let threads = lib_os::thread_cpu_all(pid).map_err(|e| e.to_string())?;
+	let threads = lib_common::os::thread_cpu_all(pid).map_err(|e| e.to_string())?;
 	let thread = threads
 		.iter()
 		.find(|thread| thread.name == name)

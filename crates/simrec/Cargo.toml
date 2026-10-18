@@ -10,7 +10,6 @@ workspace = true
 [dependencies]
 # -- Internal
 lib-common.workspace = true
-lib-os.workspace = true
 # -- Async / Event
 tokio.workspace = true
 # -- Serde / Format

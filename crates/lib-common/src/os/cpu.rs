@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::os::error::Result;
 
 #[derive(Debug, Clone)]
 pub struct ThreadCpu {
@@ -23,7 +23,7 @@ pub fn thread_cpu_all(pid: i32) -> Result<Vec<ThreadCpu>> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn thread_cpu_all(_pid: i32) -> Result<Vec<ThreadCpu>> {
-	Err(crate::Error::Unsupported)
+	Err(crate::os::error::Error::Unsupported)
 }
 
 #[cfg(target_os = "macos")]
@@ -33,7 +33,7 @@ pub fn process_stats(pid: i32) -> Result<ProcessStats> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn process_stats(_pid: i32) -> Result<ProcessStats> {
-	Err(crate::Error::Unsupported)
+	Err(crate::os::error::Error::Unsupported)
 }
 
 // region:    --- Support
@@ -41,7 +41,7 @@ pub fn process_stats(_pid: i32) -> Result<ProcessStats> {
 #[cfg(target_os = "macos")]
 mod macos {
 	use super::{ProcessStats, ThreadCpu};
-	use crate::{Error, Result};
+	use crate::os::error::{Error, Result};
 	// TaskAllInfo and ThreadInfo are not re-exported by proc_pid in libproc 0.14.
 	use libproc::libproc::task_info::TaskAllInfo;
 	use libproc::libproc::thread_info::ThreadInfo;

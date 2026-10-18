@@ -168,8 +168,6 @@ flowchart TB
 
 - The on-disk file tree lives in `## Workspace` below.
 
-- The on-disk file tree lives in `## Workspace` below.
-
 ## Purpose
 
 - Compare SQLite WAL capture with append-only raw binary capture for the same quadcopter sensor stream.
@@ -392,6 +390,7 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 | `--noop`      | (one of)    | pipeline diagnostic, writes no recording    |
 | `--sql`       | (one of)    | SQLite WAL backend                          |
 | `--raw`       | (one of)    | hourly raw binary backend                   |
+| `--with-index` | (off)      | with `--sql` only; adds ten per-channel indexes |
 | `--duration`  | `d1`        | input dataset, `d<N>`, `h<N>`, `m<N>`       |
 | `--out`       | `sandbox`   | `<out>/captured/<name>-<speed>/<backend>/`   |
 | `--flush-ms`  | `100`       | interval; 8192-tick size cap only if omitted |
@@ -466,7 +465,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 {
   "backend": "noop",
   "speed": "max",
-  "flush_ms": 10,
+  "flush_ms": 100,
   "ring_cap": 4096,
   "max_pending_ticks": 1024,
   "max_batch_ticks": 8192,
@@ -510,7 +509,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 
 - A sampler thread (`simrec-sampler`) starts after the sim and rec threads and stops after both are joined.
 - It never touches the ring, the recorder, the worker metrics, or the shared `cancelled` flag.
-- Every `--sample-ms`, it reads per-thread and process CPU through `lib-os`, writes one JSONL line per thread plus one process line, then flushes.
+- Every `--sample-ms`, it reads per-thread and process CPU through `lib_common::os`, writes one JSONL line per thread plus one process line, then flushes.
 - `cpu_pct` is the CPU-time delta over the monotonic interval, where 100.0 means one full core.
 - The first sample of each thread and of the process has `cpu_pct` null.
 - Threads are keyed by handle and label, so a reused handle does not inherit an old delta.
@@ -556,13 +555,13 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 - Done: workspace scaffold, streaming mocker, validated replay, no-op pipeline, raw recording, SQLite WAL recording, README documentation, epoch microsecond timestamps (manifest version 2).
 - Done: SQLite column renamed to `ts_epoch_micro`, tick field renamed to `epoch_micro`.
-- Done: CPU sampling on macOS through `lib-os`, with `cpu-samples.jsonl` output and `--sample-ms`. Tests were reported by the user as passing, not independently rerun.
+- Done: CPU sampling on macOS through `lib_common::os`, with `cpu-samples.jsonl` output and `--sample-ms`. Tests were reported by the user as passing, not independently rerun.
 - Done: 10-channel tick (4 rotors, 3-axis accelerometer, 3-axis gyroscope) with unit-suffixed channel names, manifest version 3, 40-byte ticks, 48-byte raw records, and an 11-column SQLite table with one index per channel.
 - Done: mocker attitude model (roll, pitch, yaw rate), maneuver mapping, gust bursts, and Gaussian accel and gyro noise with bias drift.
 - Reported by the user as passing: `cargo build`, `cargo test`, and `cargo clippy`. Not independently rerun.
-- Pending: `cargo fmt --all -- --check`, dataset generation, short end-to-end replays, failure-shutdown runtime checks, and the comparison matrix with CPU and RSS measurements.
+- Done: `m001` and `d001` capture runs, each publishing `capture-metrics.json` and `cpu-samples.jsonl`.
+- Pending: `cargo fmt --all -- --check`, failure-shutdown runtime checks, and the comparison matrix built from the published metrics and CPU samples.
 - Existing version 2 datasets (20-byte ticks) and 5-channel captures must be regenerated.
-- No benchmark results are claimed yet.
 
 ## Known Limits
 
@@ -573,7 +572,7 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 - Same-seed datasets differ in `start_epoch_us` unless `--start-us` is given.
 - Version 1 and version 2 datasets and 5-channel captures with the old `ts_us` column must be regenerated.
 - Large ring capacities can consume substantial memory.
-- Sampling is macOS only. Other platforms write one `error` line. Linux (`/proc/self/task/<tid>/stat`) is a later addition behind the same `lib-os` API.
+- Sampling is macOS only. Other platforms write one `error` line. Linux (`/proc/self/task/<tid>/stat`) is a later addition behind the same `lib_common::os` API.
 - Activity after the last sample (up to one interval) is not captured.
 
 ## Deferred and Later

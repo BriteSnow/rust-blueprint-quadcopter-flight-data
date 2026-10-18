@@ -6,6 +6,7 @@ const CAPTURED_DIR = "sandbox/captured/";
 const MOCK_DIR = "sandbox/mock-data/";
 const METRICS_FILE = "capture-metrics.json";
 const MANIFEST_FILE = "manifest.json";
+const MANIFEST_VERSION = 3;
 const CPU_SAMPLES_FILE = "cpu-samples.jsonl";
 const TICK_SECONDS = 0.005;
 const DATASET_NAME = /^[dm]\d+$/;
@@ -502,12 +503,20 @@ function renderDatasetHeader(dataset) {
         `Manifest ${dataset.manifestSource}: ${formatInt(manifest.tick_count)} ticks, input ${formatBytes(manifest.tick_count * manifest.bytes_per_tick)}, seed ${manifest.seed}`,
       )
     : null;
+  const channels = manifest?.channels?.length
+    ? h(
+        "p",
+        { class: "dataset-facts small" },
+        `Channels, ${manifest.channels.length} at ${manifest.bytes_per_tick} bytes/tick: ${manifest.channels.join(", ")}`,
+      )
+    : null;
   return h(
     "header",
     { class: "dataset-header" },
     h("h2", { class: "dataset-title" }, dataset.name),
     h("p", { class: "dataset-facts" }, facts.join(", ")),
     source,
+    channels,
   );
 }
 
@@ -517,6 +526,11 @@ function renderWarnings(dataset, runs) {
   if (!dataset.manifest) {
     const paths = manifestSources(dataset.name).map((source) => `${MOCK_DIR}${source}/${MANIFEST_FILE}`);
     messages.push(`Manifest not found at ${paths.join(", ")}; tick conservation is not checked.`);
+  }
+  if (dataset.manifest && dataset.manifest.version !== MANIFEST_VERSION) {
+    messages.push(
+      `Manifest ${dataset.manifestSource} is version ${dataset.manifest.version ?? "unknown"}; regenerate it and its captures with the current mocker (version ${MANIFEST_VERSION}).`,
+    );
   }
   const configs = new Set(complete.map((run) => configKey(run.metrics)));
   if (configs.size > 1) {

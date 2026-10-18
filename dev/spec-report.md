@@ -69,8 +69,8 @@ Backends in each run folder are found the same way:
 - **Dataset tabs:** dataset name, duration label, and run count for the selected speed. The selected speed and dataset are kept in the URL hash as `#<speed>/<dataset>`, for example `#real/m010`. The older `#<dataset>` form is still accepted.
 
 - **Dataset panel:** shows the selected dataset at the selected speed.
-  - Header: name, duration, expected ticks for the duration, and rate. A second line shows the manifest source folder, its tick count, input size, and seed, because a shared manifest may describe a longer dataset.
-  - Warnings: missing manifest, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, and probe-only discovery.
+  - Header: name, duration, expected ticks for the duration, and rate. A second line shows the manifest source folder, its tick count, input size, and seed, because a shared manifest may describe a longer dataset. A third line lists the manifest channels and the bytes per tick, so the ten-channel tick layout is visible.
+  - Warnings: missing manifest, a manifest version older than 3, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, and probe-only discovery.
   - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, sim thread, rec thread, and process CPU (average and peak), process RSS peak, and the tick conservation badge. A run without metrics still shows its CPU when its samples file exists.
   - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, flush p99, and sim and rec thread CPU. Charts redraw on resize and support HiDPI screens.
   - Comparison table: one row per metric and one column per backend. The best value in a row is highlighted. Cells that display the same text as the best value are all highlighted.

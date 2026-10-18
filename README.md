@@ -92,9 +92,9 @@ cargo run --release -p simrec -- --raw --duration m1 --speed real
 cargo run --release -p simrec -- --sql --duration m1 --speed real
 cargo run --release -p simrec -- --sql --duration m1 --speed real --with-index
 
-cargo run --release -p simrec -- --raw --duration m10 --speed real
-cargo run --release -p simrec -- --sql --duration m10 --speed real
-cargo run --release -p simrec -- --sql --duration m10 --speed real --with-index
+cargo run --release -p simrec -- --raw --duration m5 --speed real
+cargo run --release -p simrec -- --sql --duration m5 --speed real
+cargo run --release -p simrec -- --sql --duration m5 --speed real --with-index
 ```
 
 Help output from `cargo run --release -p simrec -- --help`:

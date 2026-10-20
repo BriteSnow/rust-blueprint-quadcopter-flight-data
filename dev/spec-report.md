@@ -33,11 +33,14 @@ python3 -m http.server 8000
 
 | File | Use |
 | ---- | --- |
-| `sandbox/captured/<name>-<speed>/<backend>/capture-metrics.json` | run metrics, schema in `dev/spec-overall.md` |
+| `sandbox/captured/<name>-<speed>/<backend>/capture-main-metrics.json` | main run metrics, schema in `dev/spec-overall.md`, falls back to `capture-metrics.json` |
 | `sandbox/mock-data/<name>/manifest.json` | expected tick count, input size, rate, seed |
-| `sandbox/captured/<name>-<speed>/<backend>/cpu-samples.jsonl` | per-thread and process CPU samples, read line by line, partial lines skipped |
+| `sandbox/captured/<name>-<speed>/<backend>/capture-main-ostel.jsonl` | per-thread and process CPU samples, read line by line, partial lines skipped, falls back to `cpu-samples.jsonl` |
+| `sandbox/captured/<name>-<speed>/<backend>/capture-sum-metrics.json` | summary metrics, schema in `dev/spec-overall.md` |
+| `sandbox/captured/<name>-<speed>/<backend>/capture-sum-ostel.jsonl` | `simrec-sum` thread CPU samples, read line by line, partial lines skipped |
 
-- A backend folder without `capture-metrics.json` is shown as incomplete. This covers runs that failed, were interrupted, or are still running.
+- A backend folder without `capture-main-metrics.json` is shown as incomplete. This covers runs that failed, were interrupted, or are still running.
+- A summary without `capture-sum-metrics.json` is shown as incomplete, and its cost is still shown from `capture-sum-ostel.jsonl` when that file exists.
 - A missing manifest disables the tick conservation check and shows a warning.
 
 ## Discovery
@@ -70,10 +73,11 @@ Backends in each run folder are found the same way:
 
 - **Dataset panel:** shows the selected dataset at the selected speed.
   - Header: name, duration, expected ticks for the duration, and rate. A second line shows the manifest source folder, its tick count, input size, and seed, because a shared manifest may describe a longer dataset. A third line lists the manifest channels and the bytes per tick, so the ten-channel tick layout is visible.
-  - Warnings: missing manifest, a manifest version older than 3, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, and probe-only discovery.
+  - Warnings: missing manifest, a manifest version older than 3, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, summary telemetry without `capture-sum-metrics.json`, and probe-only discovery.
   - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, sim thread, rec thread, and process CPU (average and peak), process RSS peak, and the tick conservation badge. A run without metrics still shows its CPU when its samples file exists.
-  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, flush p99, and sim and rec thread CPU. Charts redraw on resize and support HiDPI screens.
-  - Comparison table: one row per metric and one column per backend. The best value in a row is highlighted. Cells that display the same text as the best value are all highlighted.
+  - Summary cost: sum thread CPU (average and peak), rows written and dropped, sum flush p99, and sum output size, shown when summary files exist.
+  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, flush p99, and sim, rec, and sum thread CPU. Charts redraw on resize and support HiDPI screens.
+  - Comparison table: one row per metric and one column per backend, including the summary rows. The best value in a row is highlighted. Cells that display the same text as the best value are all highlighted.
 
 ## Derived Values
 

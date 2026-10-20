@@ -1,5 +1,6 @@
 use crate::metrics::FlushHistogram;
 use crate::recorder::{Recorder, Tick};
+use crate::sum_acc::{SumFeed, SumFeedStats};
 use crate::support::{check_cancelled, idle_wait};
 use crate::Result;
 use lib_common::event_base::SyncSpscRx;
@@ -12,6 +13,16 @@ pub struct ConsumerStats {
 	pub flushes: FlushHistogram,
 	pub finish_ms: f64,
 	pub output_bytes: u64,
+
+	/// Summary feed counters, absent when the summary is disabled.
+	pub sum: Option<SumFeedStats>,
+}
+
+/// Flush triggers shared by the consume loop and its message handler.
+#[derive(Clone, Copy)]
+struct FlushPolicy {
+	interval: Duration,
+	max_batch: Option<usize>,
 }
 
 pub const MAX_BATCH_TICKS: usize = 8192;
@@ -19,6 +30,7 @@ pub const MAX_BATCH_TICKS: usize = 8192;
 pub fn consume(
 	mut consumer: SyncSpscRx<Vec<Tick>>,
 	mut recorder: Box<dyn Recorder>,
+	mut sum: Option<SumFeed>,
 	interval: Duration,
 	max_batch: Option<usize>,
 	producer_done: &AtomicBool,
@@ -27,6 +39,7 @@ pub fn consume(
 	let mut stats = ConsumerStats::default();
 	let mut batch = Vec::with_capacity(MAX_BATCH_TICKS);
 	let mut last_flush = Instant::now();
+	let policy = FlushPolicy { interval, max_batch };
 
 	loop {
 		check_cancelled(cancelled)?;
@@ -40,10 +53,10 @@ pub fn consume(
 				consume_message(
 					message,
 					&mut *recorder,
+					&mut sum,
 					&mut batch,
 					&mut stats,
-					interval,
-					max_batch,
+					policy,
 					&mut last_flush,
 				)?;
 			}
@@ -55,10 +68,10 @@ pub fn consume(
 							consume_message(
 								message,
 								&mut *recorder,
+								&mut sum,
 								&mut batch,
 								&mut stats,
-								interval,
-								max_batch,
+									policy,
 								&mut last_flush,
 							)?;
 							continue;
@@ -69,7 +82,7 @@ pub fn consume(
 					}
 				}
 				if !batch.is_empty() && last_flush.elapsed() >= interval {
-					flush(&mut *recorder, &mut batch, &mut stats)?;
+					flush(&mut *recorder, &mut batch, &mut stats, &mut sum)?;
 					last_flush = Instant::now();
 				}
 				idle_wait(cancelled)?;
@@ -77,7 +90,8 @@ pub fn consume(
 		}
 	}
 
-	flush(&mut *recorder, &mut batch, &mut stats)?;
+	flush(&mut *recorder, &mut batch, &mut stats, &mut sum)?;
+	stats.sum = sum.map(SumFeed::finish);
 	let started = Instant::now();
 	stats.output_bytes = recorder.finish()?;
 	stats.finish_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -89,29 +103,40 @@ pub fn consume(
 fn consume_message(
 	message: Vec<Tick>,
 	recorder: &mut dyn Recorder,
+	sum: &mut Option<SumFeed>,
 	batch: &mut Vec<Tick>,
 	stats: &mut ConsumerStats,
-	interval: Duration,
-	max_batch: Option<usize>,
+	policy: FlushPolicy,
 	last_flush: &mut Instant,
 ) -> Result<()> {
 	for tick in message {
+		if let Some(sum) = sum.as_mut() {
+			sum.push_tick(&tick);
+		}
 		batch.push(tick);
-		if max_batch.is_some_and(|limit| batch.len() == limit) || last_flush.elapsed() >= interval {
-			flush(recorder, batch, stats)?;
+		if policy.max_batch.is_some_and(|limit| batch.len() == limit) || last_flush.elapsed() >= policy.interval {
+			flush(recorder, batch, stats, sum)?;
 			*last_flush = Instant::now();
 		}
 	}
 	Ok(())
 }
 
-fn flush(recorder: &mut dyn Recorder, batch: &mut Vec<Tick>, stats: &mut ConsumerStats) -> Result<()> {
+fn flush(
+	recorder: &mut dyn Recorder,
+	batch: &mut Vec<Tick>,
+	stats: &mut ConsumerStats,
+	sum: &mut Option<SumFeed>,
+) -> Result<()> {
 	if batch.is_empty() {
 		return Ok(());
 	}
 	let started = Instant::now();
 	recorder.write_batch(batch)?;
 	stats.flushes.record(started.elapsed());
+	if let Some(sum) = sum.as_mut() {
+		sum.try_send();
+	}
 	stats.ticks_total += batch.len() as u64;
 	batch.clear();
 	Ok(())
@@ -152,6 +177,7 @@ mod tests {
 		let stats = consume(
 			consumer,
 			Box::new(NoopRecorder),
+			None,
 			Duration::from_secs(60),
 			Some(MAX_BATCH_TICKS),
 			&producer_done,
@@ -175,6 +201,7 @@ mod tests {
 		let result = consume(
 			consumer,
 			Box::new(NoopRecorder),
+			None,
 			Duration::from_millis(10),
 			Some(MAX_BATCH_TICKS),
 			&producer_done,
@@ -211,6 +238,7 @@ mod tests {
 		let stats = consume(
 			consumer,
 			Box::new(recorder),
+			None,
 			Duration::from_secs(86_400),
 			Some(MAX_BATCH_TICKS),
 			&producer_done,
@@ -247,6 +275,7 @@ mod tests {
 		let stats = consume(
 			consumer,
 			Box::new(recorder),
+			None,
 			Duration::from_secs(86_400),
 			None,
 			&producer_done,
@@ -285,6 +314,7 @@ mod tests {
 		let result = consume(
 			consumer,
 			Box::new(recorder),
+			None,
 			Duration::from_secs(60),
 			Some(MAX_BATCH_TICKS),
 			&producer_done,
@@ -323,6 +353,7 @@ mod tests {
 		let result = consume(
 			consumer,
 			Box::new(recorder),
+			None,
 			Duration::from_secs(60),
 			Some(MAX_BATCH_TICKS),
 			&producer_done,
@@ -334,6 +365,52 @@ mod tests {
 		assert_eq!(error.to_string(), "Custom(\"test finish failure\")");
 		let calls = calls.lock().map_err(|_| "test recorder lock poisoned")?;
 		assert_eq!(*calls, vec![1, 0]);
+		Ok(())
+	}
+
+	#[test]
+	fn test_rec_consume_sum_feed_full_ring() -> Result<()> {
+		// -- Setup & Fixtures
+		let (mut producer, consumer) = new_spsc_bounded("rec-sum-feed", 2)?;
+		let (sum_producer, mut sum_consumer) = new_spsc_bounded("rec-sum-feed-ring", 1)?;
+		let ticks: Vec<Tick> = (0..400_i64)
+			.map(|second| Tick {
+				epoch_micro: second * 1_000_000,
+				v: [1.0; CHANNEL_COUNT],
+			})
+			.collect();
+		for chunk in ticks.chunks(200) {
+			queue_ticks(&mut producer, chunk.to_vec())?;
+		}
+		let producer_done = AtomicBool::new(true);
+		let cancelled = AtomicBool::new(false);
+
+		// -- Exec
+		let stats = consume(
+			consumer,
+			Box::new(NoopRecorder),
+			Some(SumFeed::new(sum_producer)),
+			Duration::from_secs(60),
+			Some(MAX_BATCH_TICKS),
+			&producer_done,
+			&cancelled,
+		)?;
+		let mut sent = 0_u64;
+		loop {
+			match sum_consumer.try_recv() {
+				Ok(Some(rows)) => sent += rows.len() as u64,
+				Ok(None) => break,
+				Err(error) if error.is_disconnected() => break,
+				Err(error) => return Err(error.into()),
+			}
+		}
+
+		// -- Check
+		let sum = stats.sum.ok_or("expected sum feed counters")?;
+		assert_eq!(stats.ticks_total, 400);
+		assert_eq!(sum.rows_emitted, 400);
+		assert!(sum.rows_dropped > 0);
+		assert_eq!(sent + sum.rows_dropped, sum.rows_emitted);
 		Ok(())
 	}
 

@@ -6,7 +6,7 @@ mod test_cases {
 
 	use crate::app::*;
 	use crate::recorder::CHANNEL_COUNT;
-	use crate::sampler::{CpuSource, SamplerSetup, CPU_SAMPLES_FILE_NAME};
+	use crate::sampler::{CpuSource, SamplerSetup, MAIN_OSTEL_FILE_NAME};
 	use crate::sim::ReplaySpeed;
 	use crate::{mock_in, recorder, sim};
 	use std::sync::Arc;
@@ -319,7 +319,7 @@ mod test_cases {
 			16,
 			None,
 		)?;
-		let bytes = fs::read(out.join("seg-000000.bin"))?;
+		let bytes = fs::read(out.join("capture-main-seg-000000.bin"))?;
 		let ticks = fs::read(dataset.join("ticks.bin"))?;
 
 		// -- Check
@@ -355,7 +355,7 @@ mod test_cases {
 			16,
 			None,
 		)?;
-		let connection = rusqlite::Connection::open(out.join("capture.sqlite"))?;
+		let connection = rusqlite::Connection::open(out.join("capture-main.sqlite"))?;
 		let (min_ts_us, max_ts_us, count): (i64, i64, i64) = connection.query_row(
 			"SELECT MIN(ts_epoch_micro), MAX(ts_epoch_micro), COUNT(*) FROM samples",
 			[],
@@ -399,10 +399,11 @@ mod test_cases {
 		let tick_count = 20_000;
 		let input = fixture_input("test_main_replay_workers_sampler_error_keeps_capture", tick_count)?;
 		let out = fixture_directory("test_main_replay_workers_sampler_error_keeps_capture_out")?;
-		let samples_path = out.join(CPU_SAMPLES_FILE_NAME);
+		let samples_path = out.join(MAIN_OSTEL_FILE_NAME);
 		let sampler = SamplerSetup {
 			source: Box::new(FailingSource),
-			writer: Box::new(fs::File::create(&samples_path)?),
+			main_writer: Box::new(fs::File::create(&samples_path)?),
+			sum_writer: None,
 			interval: Duration::from_millis(10),
 		};
 		let observed = Arc::new(std::sync::Mutex::new(Observed::default()));
@@ -442,10 +443,11 @@ mod test_cases {
 		// -- Setup & Fixtures
 		let input = fixture_input("test_main_replay_workers_cpu_samples_written", 100)?;
 		let out = fixture_directory("test_main_replay_workers_cpu_samples_written_out")?;
-		let samples_path = out.join(CPU_SAMPLES_FILE_NAME);
+		let samples_path = out.join(MAIN_OSTEL_FILE_NAME);
 		let sampler = SamplerSetup {
 			source: Box::new(OsCpuSource::current()),
-			writer: Box::new(fs::File::create(&samples_path)?),
+			main_writer: Box::new(fs::File::create(&samples_path)?),
+			sum_writer: None,
 			interval: Duration::from_millis(50),
 		};
 
@@ -486,6 +488,91 @@ mod test_cases {
 		assert!(labels.contains("simrec-sim"));
 		assert!(labels.contains("simrec-rec"));
 		assert!(has_process);
+		Ok(())
+	}
+
+	#[test]
+	fn test_main_run_replay_sum_rows_conserved() -> Result<()> {
+		// -- Setup & Fixtures
+		let tick_count = 2_000;
+		let input = fixture_input("test_main_run_replay_sum_rows_conserved", tick_count)?;
+		let out = fixture_directory("test_main_run_replay_sum_rows_conserved_out")?;
+		let observed = Arc::new(std::sync::Mutex::new(Observed::default()));
+		let recorder = ObservingRecorder {
+			observed: Arc::clone(&observed),
+			failure: Failure::None,
+		};
+		let sum_setup = SumSetup {
+			writer: Box::new(SumSqlite::new(&out)?),
+			flush_interval: Duration::from_millis(10),
+			ring_cap: 16,
+		};
+
+		// -- Exec
+		let outcome = run_replay(
+			input,
+			Box::new(recorder),
+			ReplayOptions {
+				speed: ReplaySpeed::Max,
+				flush_interval: Duration::from_secs(60),
+				max_batch: Some(rec::MAX_BATCH_TICKS),
+				ring_cap: 1,
+			},
+			None,
+			Some(sum_setup),
+		)?;
+
+		// -- Check
+		let feed = outcome.recorded.sum.ok_or("expected sum feed counters")?;
+		let stats = outcome.summary.ok_or("expected summary outcome")??;
+		assert_eq!(outcome.recorded.ticks_total, tick_count);
+		assert_eq!(feed.rows_emitted, 10);
+		assert_eq!(feed.rows_dropped, 0);
+		assert_eq!(stats.rows_written, 10);
+		assert_eq!(stats.ticks_summarized, tick_count);
+		check_sum_conservation(&stats, &feed, tick_count)?;
+		Ok(())
+	}
+
+	#[test]
+	fn test_main_run_replay_sum_write_failure_keeps_capture() -> Result<()> {
+		// -- Setup & Fixtures
+		let tick_count = 2_000;
+		let input = fixture_input("test_main_run_replay_sum_write_failure_keeps_capture", tick_count)?;
+		let observed = Arc::new(std::sync::Mutex::new(Observed::default()));
+		let recorder = ObservingRecorder {
+			observed: Arc::clone(&observed),
+			failure: Failure::None,
+		};
+		let sum_setup = SumSetup {
+			writer: Box::new(FailingSumWriter),
+			flush_interval: Duration::ZERO,
+			ring_cap: 16,
+		};
+
+		// -- Exec
+		let outcome = run_replay(
+			input,
+			Box::new(recorder),
+			ReplayOptions {
+				speed: ReplaySpeed::Max,
+				flush_interval: Duration::from_secs(60),
+				max_batch: Some(rec::MAX_BATCH_TICKS),
+				ring_cap: 1,
+			},
+			None,
+			Some(sum_setup),
+		)?;
+
+		// -- Check
+		assert_eq!(outcome.recorded.ticks_total, tick_count);
+		assert!(observed.lock().map_err(|_| "observation lock poisoned")?.finished);
+		let error = outcome
+			.summary
+			.ok_or("expected summary outcome")?
+			.err()
+			.ok_or("expected summary failure")?;
+		assert!(matches!(error, Error::Custom(message) if message == "injected summary write failure"));
 		Ok(())
 	}
 
@@ -557,6 +644,18 @@ mod test_cases {
 
 		fn process(&mut self) -> lib_common::os::Result<lib_common::os::ProcessStats> {
 			Err(lib_common::os::Error::Unsupported)
+		}
+	}
+
+	struct FailingSumWriter;
+
+	impl crate::sum_sqlite::SumWriter for FailingSumWriter {
+		fn write_rows(&mut self, _rows: &[crate::sum_acc::SumRow]) -> crate::Result<()> {
+			Err(Error::custom("injected summary write failure"))
+		}
+
+		fn finish(self: Box<Self>) -> crate::Result<u64> {
+			Ok(0)
 		}
 	}
 

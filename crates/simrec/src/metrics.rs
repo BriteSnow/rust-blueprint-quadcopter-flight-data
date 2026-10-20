@@ -1,5 +1,7 @@
 use crate::rec::{ConsumerStats, MAX_BATCH_TICKS};
 use crate::sim::{ProducerStats, MAX_PENDING_TICKS};
+use crate::sum::SumStats;
+use crate::sum_acc::SumFeedStats;
 use crate::Result;
 use serde::Serialize;
 use simple_fs::SPath;
@@ -7,7 +9,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::time::Duration;
 
-pub const METRICS_FILE_NAME: &str = "capture-metrics.json";
+pub const METRICS_FILE_NAME: &str = "capture-main-metrics.json";
+pub const SUM_METRICS_FILE_NAME: &str = "capture-sum-metrics.json";
 
 #[derive(Serialize)]
 pub struct Metrics {
@@ -29,6 +32,67 @@ pub struct Metrics {
 	percentile_method: &'static str,
 	finish_ms: f64,
 	output_bytes: u64,
+}
+
+#[derive(Serialize)]
+pub struct SumMetrics {
+	backend: &'static str,
+	speed: String,
+	sum_flush_s: u64,
+	sum_ring_cap: usize,
+	rows_emitted: u64,
+	rows_written: u64,
+	rows_dropped: u64,
+	ticks_summarized: u64,
+	max_pending_rows: usize,
+	wall_time_s: f64,
+	rows_per_s: f64,
+	flush_count: u64,
+	flush_ms_p50: f64,
+	flush_ms_p99: f64,
+	flush_ms_max: f64,
+	percentile_method: &'static str,
+	finish_ms: f64,
+	output_bytes: u64,
+}
+
+impl SumMetrics {
+	pub fn from_run(
+		speed: String,
+		sum_flush_s: u64,
+		sum_ring_cap: usize,
+		feed: SumFeedStats,
+		stats: SumStats,
+	) -> Self {
+		Self {
+			backend: "sqlite-sum",
+			speed,
+			sum_flush_s,
+			sum_ring_cap,
+			rows_emitted: feed.rows_emitted,
+			rows_written: stats.rows_written,
+			rows_dropped: feed.rows_dropped,
+			ticks_summarized: stats.ticks_summarized,
+			max_pending_rows: feed.max_pending_rows,
+			wall_time_s: stats.wall_time_s,
+			rows_per_s: if stats.wall_time_s > 0.0 {
+				stats.rows_written as f64 / stats.wall_time_s
+			} else {
+				0.0
+			},
+			flush_count: stats.flushes.count(),
+			flush_ms_p50: stats.flushes.percentile_ms(50),
+			flush_ms_p99: stats.flushes.percentile_ms(99),
+			flush_ms_max: stats.flushes.max_ns as f64 / 1_000_000.0,
+			percentile_method: "nearest-rank power-of-two nanosecond bucket upper bound",
+			finish_ms: stats.finish_ms,
+			output_bytes: stats.output_bytes,
+		}
+	}
+
+	pub fn publish(&self, directory: &SPath) -> Result<()> {
+		publish_json(directory, SUM_METRICS_FILE_NAME, self)
+	}
 }
 
 pub struct FlushHistogram {
@@ -75,17 +139,7 @@ impl Metrics {
 	}
 
 	pub fn publish(&self, directory: &SPath) -> Result<()> {
-		let temporary_path = directory.join(format!(".{METRICS_FILE_NAME}.tmp"));
-		let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary_path)?;
-		serde_json::to_writer_pretty(&mut file, self)?;
-		file.write_all(b"\n")?;
-		file.sync_all()?;
-		drop(file);
-		fs::hard_link(&temporary_path, directory.join(METRICS_FILE_NAME))?;
-		if let Err(error) = fs::remove_file(&temporary_path) {
-			eprintln!("simrec: metrics published, but temporary cleanup failed: {error}");
-		}
-		Ok(())
+		publish_json(directory, METRICS_FILE_NAME, self)
 	}
 }
 
@@ -133,6 +187,24 @@ impl Default for FlushHistogram {
 	}
 }
 
+// region:    --- Support
+
+fn publish_json<T: Serialize>(directory: &SPath, file_name: &str, value: &T) -> Result<()> {
+	let temporary_path = directory.join(format!(".{file_name}.tmp"));
+	let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary_path)?;
+	serde_json::to_writer_pretty(&mut file, value)?;
+	file.write_all(b"\n")?;
+	file.sync_all()?;
+	drop(file);
+	fs::hard_link(&temporary_path, directory.join(file_name))?;
+	if let Err(error) = fs::remove_file(&temporary_path) {
+		eprintln!("simrec: {file_name} published, but temporary cleanup failed: {error}");
+	}
+	Ok(())
+}
+
+// endregion: --- Support
+
 // region:    --- Tests
 
 #[cfg(test)]
@@ -157,6 +229,7 @@ mod tests {
 			flushes,
 			finish_ms: 2.5,
 			output_bytes: 0,
+			sum: None,
 		};
 
 		// -- Exec
@@ -205,13 +278,13 @@ mod tests {
 
 		// -- Exec
 		metrics.publish(&directory)?;
-		let bytes = std::fs::read(directory.join("capture-metrics.json"))?;
+		let bytes = std::fs::read(directory.join("capture-main-metrics.json"))?;
 		let actual: serde_json::Value = serde_json::from_slice(&bytes)?;
 
 		// -- Check
 		assert_eq!(actual, expected);
 		assert_eq!(bytes.last(), Some(&b'\n'));
-		assert!(!std::fs::exists(directory.join(".capture-metrics.json.tmp"))?);
+		assert!(!std::fs::exists(directory.join(".capture-main-metrics.json.tmp"))?);
 		assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
 		Ok(())
 	}
@@ -222,15 +295,15 @@ mod tests {
 		let directory = fixture_directory("test_metrics_publish_existing_destination")?;
 		let metrics = fixture_metrics();
 		metrics.publish(&directory)?;
-		let original = std::fs::read(directory.join("capture-metrics.json"))?;
+		let original = std::fs::read(directory.join("capture-main-metrics.json"))?;
 		let mut replacement = fixture_metrics();
 		replacement.ticks_total = 999;
 
 		// -- Exec
 		let result = replacement.publish(&directory);
-		let retained = std::fs::read(directory.join("capture-metrics.json"))?;
+		let retained = std::fs::read(directory.join("capture-main-metrics.json"))?;
 		let temporary: serde_json::Value =
-			serde_json::from_slice(&std::fs::read(directory.join(".capture-metrics.json.tmp"))?)?;
+			serde_json::from_slice(&std::fs::read(directory.join(".capture-main-metrics.json.tmp"))?)?;
 
 		// -- Check
 		assert!(result.is_err());
@@ -243,7 +316,7 @@ mod tests {
 	fn test_metrics_publish_existing_temporary_file() -> Result<()> {
 		// -- Setup & Fixtures
 		let directory = fixture_directory("test_metrics_publish_existing_temporary_file")?;
-		let temporary_path = directory.join(".capture-metrics.json.tmp");
+		let temporary_path = directory.join(".capture-main-metrics.json.tmp");
 		let original = b"retained partial publication";
 		std::fs::write(&temporary_path, original)?;
 		let metrics = fixture_metrics();
@@ -258,7 +331,7 @@ mod tests {
 				if error.kind() == std::io::ErrorKind::AlreadyExists
 		));
 		assert_eq!(std::fs::read(&temporary_path)?, original);
-		assert!(!std::fs::exists(directory.join("capture-metrics.json"))?);
+		assert!(!std::fs::exists(directory.join("capture-main-metrics.json"))?);
 		Ok(())
 	}
 

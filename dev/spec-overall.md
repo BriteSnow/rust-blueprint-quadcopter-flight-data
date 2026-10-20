@@ -16,23 +16,28 @@ flowchart LR
   end
   subgraph simrecproc["simrec process"]
     sim["simrec-sim thread<br/>paced producer"]
-    rec["simrec-rec thread<br/>batched consumer"]
+    rec["simrec-rec thread<br/>writes main recording, accumulates seconds"]
+    sum["simrec-sum thread<br/>writes per-second summary"]
     smp["simrec-sampler thread<br/>CPU samples"]
   end
   mock[("sandbox/mock-data/NAME<br/>ticks.bin, story.jsonl, manifest.json")]
-  captured[("sandbox/captured/NAME-SPEED/BACKEND<br/>recording, capture-metrics.json, cpu-samples.jsonl")]
+  captured[("sandbox/captured/NAME-SPEED/BACKEND<br/>capture-main-*, capture-main-metrics.json, capture-main-ostel.jsonl")]
+  sumdb[("capture-sum.sqlite, capture-sum-metrics.json, capture-sum-ostel.jsonl")]
   gen -->|"writes"| mock
   mock -->|"reads"| sim
   sim -->|"ticks over bounded ring"| rec
   rec -->|"writes recording"| captured
-  smp -->|"writes cpu-samples.jsonl"| captured
+  rec -->|"SumRow batches over bounded sum ring"| sum
+  sum -->|"writes summary"| sumdb
+  smp -->|"writes main ostel"| captured
+  smp -->|"writes sum ostel"| sumdb
 ```
 
 - `mocker` runs once per dataset and exits, and it is the only writer of `mock-data/`.
 
 - `simrec` runs once per replay and writes exactly one backend folder, so one dataset can feed many runs.
 
-- The three `simrec` threads share one process; the sampler never touches the ring, the recorder, or the cancellation flag.
+- The four `simrec` threads share one process; the sampler never touches the ring, the recorder, or the cancellation flag, and the summary thread only reads its own sum ring.
 
 - `report/` is a static browser page, not a running crate, so it appears in the tech stack diagram instead.
 
@@ -71,11 +76,13 @@ flowchart LR
   consumer -->|"write_batch"| recorder{"Recorder"}
   recorder --> noop["noop<br/>discards ticks"]
   recorder --> raw["raw<br/>one segment per hour"]
-  recorder --> sqlite["sqlite<br/>capture.sqlite in WAL mode"]
+  recorder --> sqlite["sqlite<br/>capture-main.sqlite in WAL mode"]
+  consumer -->|"SumRow batches over sum ring"| summary["simrec-sum<br/>writes capture-sum.sqlite"]
   noop --> finish["join both workers<br/>check tick conservation"]
   raw --> finish
   sqlite --> finish
-  finish --> metrics["capture-metrics.json<br/>published last"]
+  summary --> finish
+  finish --> metrics["capture-main-metrics.json<br/>published last"]
 ```
 
 - The ring is a named, bounded, single-owner SPSC queue; a full ring returns the owned message instead of dropping it.
@@ -86,7 +93,7 @@ flowchart LR
 
 - The sampler never touches the ring, the recorder, or the cancellation flag, and its failure never fails the capture.
 
-- Both workers are joined and tick conservation is checked before `capture-metrics.json` is published.
+- Both workers are joined and tick conservation is checked before `capture-main-metrics.json` is published. The summary thread is joined before `capture-sum-metrics.json` is published.
 
 ### Artifacts on Disk
 
@@ -99,7 +106,7 @@ flowchart TB
   sandbox --> caproot["captured/NAME-SPEED/"]
   mockroot --> mockfiles["ticks.bin<br/>story.jsonl<br/>manifest.json"]
   caproot --> backend["BACKEND/"]
-  backend --> runfiles["recording files<br/>cpu-samples.jsonl<br/>capture-metrics.json"]
+  backend --> runfiles["recording files<br/>capture-main-ostel.jsonl<br/>capture-main-metrics.json<br/>summary files when enabled"]
 ```
 
 - Dataset names encode the requested duration (`dNNN` for whole days, `mNNN` for other spans).
@@ -397,6 +404,9 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 | `--speed`     | `real`      | `real` (deadline pacing) or `max`           |
 | `--ring-cap`  | `4096`      | ring capacity in messages, 1 to 65536       |
 | `--sample-ms` | `1000`      | CPU sampling interval in ms, positive       |
+| `--no-sum` | (off) | disable the per-second summary, no `capture-sum-*` files |
+| `--sum-flush-s` | `1` | summary commit interval in seconds, positive |
+| `--sum-ring-cap` | `64` | summary ring capacity in messages, 1 to 4096 |
 
 - Exactly one backend flag is required.
 - `--duration` accepts `d<N>`, `h<N>`, or `m<N>` with N positive.
@@ -424,7 +434,7 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 - Consumer thread appends ticks to a batch and flushes when the interval elapses. Without `--flush-ms`, the interval is 100 ms and a batch is also flushed at 8192 ticks. With `--flush-ms`, there is no tick cap.
 - Final draining happens only after producer success is published and the ring is rechecked.
 - Both workers are joined before completion is reported.
-- Threads are named `simrec-sim` (producer), `simrec-rec` (consumer), and `simrec-sampler` (CPU sampler, when enabled).
+- Threads are named `simrec-sim` (producer), `simrec-rec` (consumer), `simrec-sum` (summary writer, unless `--no-sum`), and `simrec-sampler` (CPU sampler, when enabled).
 - Tick conservation is required: produced and recorded counts must equal the replayed tick count, which is the requested span in ticks.
 
 ### Recorder Trait
@@ -435,8 +445,8 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 ### Backends
 
 - No-op: discards ticks. Reports zero output bytes. It measures pipeline overhead only.
-- SQLite: `sandbox/captured/<name>-<speed>/sqlite-pk-index/capture.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-all-index/capture.sqlite` (the all-index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and ten `REAL` channels in tick order, plus ten secondary indexes, one per channel (`idx_samples_rotor_fl_rpm` through `idx_samples_gyro_z_rads`), in the all-index variant only. Each nonempty batch is one transaction with a cached prepared statement binding 11 values. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
-- Raw: `sandbox/captured/<name>-<speed>/raw/seg-000000.bin` and so on. Each record is 48 bytes: little-endian `i64` `ts_epoch_micro` (epoch microseconds) followed by ten `f32` values. Each segment holds one hour (720,000 ticks), 34,560,000 bytes, including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
+- SQLite: `sandbox/captured/<name>-<speed>/sqlite-pk-index/capture-main.sqlite` or `sandbox/captured/<name>-<speed>/sqlite-all-index/capture-main.sqlite` (the all-index variant is selected by `--with-index`), WAL journal mode, `synchronous=NORMAL`. Table `samples` with `ts_epoch_micro` (epoch microseconds) as primary key and ten `REAL` channels in tick order, plus ten secondary indexes, one per channel (`idx_samples_rotor_fl_rpm` through `idx_samples_gyro_z_rads`), in the all-index variant only. Each nonempty batch is one transaction with a cached prepared statement binding 11 values. Finalization closes the connection and counts the database plus any remaining `-wal` and `-shm` files.
+- Raw: `sandbox/captured/<name>-<speed>/raw/capture-main-seg-000000.bin` and so on. Each record is 48 bytes: little-endian `i64` `ts_epoch_micro` (epoch microseconds) followed by ten `f32` values. Each segment holds one hour (720,000 ticks), 34,560,000 bytes, including a rotation inside a batch. Writes use `BufWriter`, flushed on rotation and finalization. `output_bytes` is the sum of finalized segment sizes.
 
 ### Failure Handling
 
@@ -447,7 +457,7 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 
 ### Metrics
 
-- Published to `<out>/captured/<name>-<speed>/<backend>/capture-metrics.json` for every backend, only after successful replay, finalization, and tick conservation.
+- Published to `<out>/captured/<name>-<speed>/<backend>/capture-main-metrics.json` for every backend, only after successful replay, finalization, and tick conservation.
 
 - Configuration: backend, speed, `flush_ms`, `ring_cap`, batch and pending limits.
 - Throughput: `wall_time_s`, `ticks_total`, `ticks_per_s`.
@@ -512,14 +522,15 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 - Every `--sample-ms`, it reads per-thread and process CPU through `lib_common::os`, writes one JSONL line per thread plus one process line, then flushes.
 - `cpu_pct` is the CPU-time delta over the monotonic interval, where 100.0 means one full core.
 - The first sample of each thread and of the process has `cpu_pct` null.
+- A final sample is taken after all workers are joined, so runs shorter than one interval still get a CPU delta.
 - Threads are keyed by handle and label, so a reused handle does not inherit an old delta.
 - A sampler error never fails the capture. The sampler writes one `error` line, prints one warning to stderr, and stops.
 - If the sampler thread cannot start, the capture continues without sampling.
-- Output is `<out>/captured/<name>-<speed>/<backend>/cpu-samples.jsonl`, created with `create-new` before the replay starts, so a creation failure is a setup error.
-- The file is written for every backend, including `noop`, and is not covered by the metrics completion marker.
+- Output is `<out>/captured/<name>-<speed>/<backend>/capture-main-ostel.jsonl`, created with `create-new` before the replay starts, so a creation failure is a setup error. The `simrec-sum` thread lines go to `capture-sum-ostel.jsonl` in the same way, unless `--no-sum`.
+- Both files are written for every backend, including `noop`, and are not covered by the metrics completion markers.
 - Activity after the last sample (up to one interval) is not captured.
 
-#### cpu-samples.jsonl schema
+#### capture-main-ostel.jsonl schema
 
 One compact JSON object per line, with a `kind` discriminator. All lines for one sample share the same `seq` and `ts_epoch_us`.
 
@@ -542,6 +553,92 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 | `rss_bytes` | u64 | process lines only |
 | `message` | string | error lines only |
 
+## Summary Database
+
+**Goal:** give the console a per-second view of all ten channels, without reading the 200 Hz recording.
+
+- `simrec-rec` accumulates one row per epoch second (min, max, and sum as `f64` per channel, plus the tick count), keyed by `bucket_us = epoch_micro - epoch_micro.rem_euclid(1_000_000)` from the tick timestamp.
+- Closed rows go to a bounded sum ring with `try_send`. Rec never waits on it. Pending rows are capped at `MAX_PENDING_SUM_ROWS` (3,600), the oldest is dropped on overflow, and every drop is counted.
+- `simrec-sum` receives row batches, commits every `--sum-flush-s` seconds and at disconnect, and ends on sender disconnection. It holds no cancellation guard and never reads or sets the `cancelled` flag.
+- A summary error never fails the main capture. `simrec-sum` prints one warning, rec counts the remaining rows as dropped, and `capture-sum-metrics.json` is not published.
+- Creating `capture-sum.sqlite` or `capture-sum-ostel.jsonl` is a setup error and fails the run, like the main ostel file.
+
+### capture-sum.sqlite
+
+```sql
+CREATE TABLE sec (
+    ts_epoch_micro INTEGER PRIMARY KEY,
+    tick_count INTEGER NOT NULL,
+    rotor_fl_rpm_min REAL, rotor_fl_rpm_max REAL, rotor_fl_rpm_avg REAL,
+    rotor_fr_rpm_min REAL, rotor_fr_rpm_max REAL, rotor_fr_rpm_avg REAL,
+    rotor_rl_rpm_min REAL, rotor_rl_rpm_max REAL, rotor_rl_rpm_avg REAL,
+    rotor_rr_rpm_min REAL, rotor_rr_rpm_max REAL, rotor_rr_rpm_avg REAL,
+    accel_x_mps2_min REAL, accel_x_mps2_max REAL, accel_x_mps2_avg REAL,
+    accel_y_mps2_min REAL, accel_y_mps2_max REAL, accel_y_mps2_avg REAL,
+    accel_z_mps2_min REAL, accel_z_mps2_max REAL, accel_z_mps2_avg REAL,
+    gyro_x_rads_min REAL, gyro_x_rads_max REAL, gyro_x_rads_avg REAL,
+    gyro_y_rads_min REAL, gyro_y_rads_max REAL, gyro_y_rads_avg REAL,
+    gyro_z_rads_min REAL, gyro_z_rads_max REAL, gyro_z_rads_avg REAL
+);
+```
+
+- WAL journal mode and `synchronous=NORMAL`, the same as the main recording, so readers can query while the writer commits.
+- Columns follow channel order with `_min`, `_max`, and `_avg`. The insert binds 32 values.
+- `avg = sum / tick_count`. Partial first and last rows appear when the start is not on a whole second, and `tick_count` shows it.
+- Primary key only, no value indexes.
+- Written for every backend, including `noop`. Not written with `--no-sum`.
+
+### capture-sum-metrics.json
+
+- Published after `simrec-sum` is joined and finalized, and after the summary conservation check passes.
+- Pretty-printed JSON with a trailing newline, all keys always present, published with the same synced temporary file and hard-link rule as the main metrics.
+- Keys: `backend` (always `sqlite-sum`), `speed`, `sum_flush_s`, `sum_ring_cap`, `rows_emitted`, `rows_written`, `rows_dropped`, `ticks_summarized`, `max_pending_rows`, `wall_time_s`, `rows_per_s`, `flush_count`, `flush_ms_p50`, `flush_ms_p99`, `flush_ms_max`, `percentile_method`, `finish_ms`, and `output_bytes`.
+
+```json
+{
+  "backend": "sqlite-sum",
+  "speed": "max",
+  "sum_flush_s": 1,
+  "sum_ring_cap": 64,
+  "rows_emitted": 86400,
+  "rows_written": 86400,
+  "rows_dropped": 0,
+  "ticks_summarized": 17280000,
+  "max_pending_rows": 12,
+  "wall_time_s": 6.1,
+  "rows_per_s": 14163.9,
+  "flush_count": 7,
+  "flush_ms_p50": 4.194304,
+  "flush_ms_p99": 8.388608,
+  "flush_ms_max": 7.9,
+  "percentile_method": "nearest-rank power-of-two nanosecond bucket upper bound",
+  "finish_ms": 1.2,
+  "output_bytes": 9437184
+}
+```
+
+### Summary conservation
+
+- `rows_written + rows_dropped == rows_emitted`.
+- When `rows_dropped == 0`, `ticks_summarized` must equal the main capture's `ticks_total`.
+- A failed check prints to stderr and skips `capture-sum-metrics.json`. The main capture still succeeds.
+
+### Shutdown order
+
+1. Producer finishes. Rec drains the main ring, writes the last batch, closes the last bucket, sends pending rows, and drops the sum sender.
+2. Main recorder finishes, `simrec-sim` and `simrec-rec` are joined, and main tick conservation is checked.
+3. `simrec-sum` is joined, the summary database is finalized, and summary conservation is checked.
+4. A final sampler sample is taken, then `simrec-sampler` is stopped and joined.
+5. `capture-main-metrics.json` is published, then `capture-sum-metrics.json`.
+
+### Console contract
+
+- Open `capture-sum.sqlite` read-only. Wait if it does not exist yet.
+- Startup: `SELECT * FROM sec ORDER BY ts_epoch_micro DESC LIMIT 120`, reversed, fills the live view.
+- Live: every second, `SELECT * FROM sec WHERE ts_epoch_micro > ? ORDER BY ts_epoch_micro`.
+- Keep read transactions short so WAL checkpoints are not held back.
+- Maneuver labels come from `story.jsonl` in the dataset, not from the summary.
+
 ## Conventions
 
 - One `Error` enum and `Result` alias per crate.
@@ -560,6 +657,7 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 - Done: mocker attitude model (roll, pitch, yaw rate), maneuver mapping, gust bursts, and Gaussian accel and gyro noise with bias drift.
 - Reported by the user as passing: `cargo build`, `cargo test`, and `cargo clippy`. Not independently rerun.
 - Done: `m001` and `d001` capture runs, each publishing `capture-metrics.json` and `cpu-samples.jsonl`.
+- Done: per-second summary on its own thread, with `capture-sum.sqlite`, `capture-sum-metrics.json`, the `capture-sum-ostel.jsonl` split, and the `capture-main-*` and `capture-sum-*` output names.
 - Pending: `cargo fmt --all -- --check`, failure-shutdown runtime checks, and the comparison matrix built from the published metrics and CPU samples.
 - Existing version 2 datasets (20-byte ticks) and 5-channel captures must be regenerated.
 

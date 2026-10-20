@@ -78,7 +78,7 @@ impl RawRecorder {
 	fn open_segment(&mut self, segment_index: u64) -> Result<()> {
 		self.flush_current()?;
 
-		let path = self.directory.join(format!("seg-{segment_index:06}.bin"));
+		let path = self.directory.join(format!("capture-main-seg-{segment_index:06}.bin"));
 		let file = OpenOptions::new().write(true).create_new(true).open(&path)?;
 		self.writer = Some(BufWriter::with_capacity(BUFFER_CAPACITY, file));
 		self.segment_index = Some(segment_index);
@@ -123,7 +123,7 @@ mod tests {
 		// -- Exec
 		recorder.write_batch(&[tick])?;
 		let output_bytes = Box::new(recorder).finish()?;
-		let actual = std::fs::read(directory.join("seg-000000.bin"))?;
+		let actual = std::fs::read(directory.join("capture-main-seg-000000.bin"))?;
 
 		// -- Check
 		assert_eq!(actual, expected);
@@ -152,13 +152,13 @@ mod tests {
 		recorder.write_batch(&[tick, tick])?;
 
 		// -- Check
-		let first_segment = directory.join("seg-000000.bin");
+		let first_segment = directory.join("capture-main-seg-000000.bin");
 		assert_eq!(
 			std::fs::metadata(&first_segment)?.len(),
 			TICKS_PER_SEGMENT * RECORD_BYTES as u64
 		);
 		let output_bytes = Box::new(recorder).finish()?;
-		let second_segment = directory.join("seg-000001.bin");
+		let second_segment = directory.join("capture-main-seg-000001.bin");
 		assert_eq!(std::fs::metadata(second_segment)?.len(), RECORD_BYTES as u64);
 		assert_eq!(output_bytes, (TICKS_PER_SEGMENT + 1) * RECORD_BYTES as u64);
 		assert_eq!(std::fs::read_dir(directory)?.count(), 2);

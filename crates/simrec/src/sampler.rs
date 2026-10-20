@@ -5,7 +5,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-pub const CPU_SAMPLES_FILE_NAME: &str = "cpu-samples.jsonl";
+pub const MAIN_OSTEL_FILE_NAME: &str = "capture-main-ostel.jsonl";
+pub const SUM_OSTEL_FILE_NAME: &str = "capture-sum-ostel.jsonl";
+pub const SUM_THREAD_NAME: &str = "simrec-sum";
 
 pub trait CpuSource: Send {
 	fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>>;
@@ -18,7 +20,8 @@ pub struct OsCpuSource {
 
 pub struct SamplerSetup {
 	pub source: Box<dyn CpuSource>,
-	pub writer: Box<dyn Write + Send>,
+	pub main_writer: Box<dyn Write + Send>,
+	pub sum_writer: Option<Box<dyn Write + Send>>,
 	pub interval: Duration,
 }
 
@@ -43,50 +46,44 @@ impl CpuSource for OsCpuSource {
 /// Runs the sampling loop until `stop` is set or the interval wait is cancelled.
 ///
 /// Never fails the capture: errors are written as an `error` line and sampling stops.
+///
+/// A final sample is taken on stop when at least one sample exists, so short runs still get a CPU delta.
 pub fn run_sampler(setup: SamplerSetup, stop: &AtomicBool) {
 	let SamplerSetup {
 		mut source,
-		mut writer,
+		main_writer,
+		sum_writer,
 		interval,
 	} = setup;
+	let mut writers = SampleWriters {
+		main: main_writer,
+		sum: sum_writer,
+	};
 	let mut state = SamplerState::default();
 	let mut next = Instant::now();
 
 	loop {
 		if stop.load(Ordering::Acquire) {
-			return;
+			break;
 		}
 
-		let ts_epoch_us = lib_common::time::now();
-		let now = Instant::now();
-
-		match state.sample(source.as_mut(), now, ts_epoch_us) {
-			Ok(lines) => {
-				if let Err(error) = write_lines(writer.as_mut(), &lines) {
-					eprintln!("simrec: cpu sampler write failed: {error}");
-					return;
-				}
-			}
-			Err(error) => {
-				let line = SampleLine::Error {
-					seq: state.seq,
-					ts_epoch_us,
-					message: error.to_string(),
-				};
-				let _ = write_lines(writer.as_mut(), &[line]);
-				eprintln!("simrec: cpu sampler stopped: {error}");
-				return;
-			}
+		if !take_sample(&mut state, source.as_mut(), &mut writers) {
+			return;
 		}
 
 		let Some(deadline) = next.checked_add(interval) else {
-			return;
+			break;
 		};
 		next = deadline;
 
 		if wait_until(next, stop).is_err() {
-			return;
+			break;
 		}
+	}
+
+	// A run shorter than one interval still gets a CPU delta from this final sample.
+	if state.seq > 0 {
+		take_sample(&mut state, source.as_mut(), &mut writers);
 	}
 }
 
@@ -183,7 +180,57 @@ impl SamplerState {
 	}
 }
 
-fn write_lines(writer: &mut dyn Write, lines: &[SampleLine]) -> std::io::Result<()> {
+/// Takes one sample and writes its lines, returning `false` when sampling must stop.
+fn take_sample(state: &mut SamplerState, source: &mut dyn CpuSource, writers: &mut SampleWriters) -> bool {
+	let ts_epoch_us = lib_common::time::now();
+	let now = Instant::now();
+
+	match state.sample(source, now, ts_epoch_us) {
+		Ok(lines) => {
+			if let Err(error) = writers.route(&lines) {
+				eprintln!("simrec: cpu sampler write failed: {error}");
+				return false;
+			}
+			true
+		}
+		Err(error) => {
+			let line = SampleLine::Error {
+				seq: state.seq,
+				ts_epoch_us,
+				message: error.to_string(),
+			};
+			let _ = writers.route(&[line]);
+			eprintln!("simrec: cpu sampler stopped: {error}");
+			false
+		}
+	}
+}
+
+/// Routes each sample line to the main file, or to the sum file for the `simrec-sum` thread.
+struct SampleWriters {
+	main: Box<dyn Write + Send>,
+	sum: Option<Box<dyn Write + Send>>,
+}
+
+impl SampleWriters {
+	fn route(&mut self, lines: &[SampleLine]) -> std::io::Result<()> {
+		match self.sum.as_deref_mut() {
+			Some(sum) => {
+				let (sum_lines, main_lines): (Vec<&SampleLine>, Vec<&SampleLine>) =
+					lines.iter().partition(|line| is_sum_line(line));
+				write_lines(sum, sum_lines)?;
+				write_lines(self.main.as_mut(), main_lines)
+			}
+			None => write_lines(self.main.as_mut(), lines),
+		}
+	}
+}
+
+fn is_sum_line(line: &SampleLine) -> bool {
+	matches!(line, SampleLine::Thread { thread, .. } if thread == SUM_THREAD_NAME)
+}
+
+fn write_lines<'a>(writer: &mut dyn Write, lines: impl IntoIterator<Item = &'a SampleLine>) -> std::io::Result<()> {
 	for line in lines {
 		serde_json::to_writer(&mut *writer, line).map_err(std::io::Error::other)?;
 		writer.write_all(b"\n")?;
@@ -301,7 +348,8 @@ mod tests {
 		source.thread_script.push_back(Err(lib_common::os::Error::Unsupported));
 		let setup = SamplerSetup {
 			source: Box::new(source),
-			writer: Box::new(buf.clone()),
+			main_writer: Box::new(buf.clone()),
+			sum_writer: None,
 			interval: Duration::from_millis(1),
 		};
 
@@ -324,7 +372,8 @@ mod tests {
 		let buf = SharedBuf::default();
 		let setup = SamplerSetup {
 			source: Box::new(FakeSource::default()),
-			writer: Box::new(buf.clone()),
+			main_writer: Box::new(buf.clone()),
+			sum_writer: None,
 			interval: Duration::from_millis(1),
 		};
 
@@ -333,6 +382,88 @@ mod tests {
 
 		// -- Check
 		assert!(read_lines(&buf)?.is_empty());
+		Ok(())
+	}
+
+	#[test]
+	fn test_sampler_run_sampler_routes_sum_thread() -> Result<()> {
+		// -- Setup & Fixtures
+		let stop = AtomicBool::new(false);
+		let main_buf = SharedBuf::default();
+		let sum_buf = SharedBuf::default();
+		let mut source = FakeSource::default();
+		source.thread_script.push_back(Ok(vec![
+			make_thread("simrec-rec", 2, 0),
+			make_thread("simrec-sum", 3, 0),
+		]));
+		source.process_script.push_back(Ok(make_process(0)));
+		let setup = SamplerSetup {
+			source: Box::new(source),
+			main_writer: Box::new(main_buf.clone()),
+			sum_writer: Some(Box::new(sum_buf.clone())),
+			interval: Duration::from_millis(1),
+		};
+
+		// -- Exec
+		// The second pass has no scripted data left, so sampling ends with an error line.
+		run_sampler(setup, &stop);
+
+		// -- Check
+		let sum_lines = read_lines(&sum_buf)?;
+		assert_eq!(sum_lines.len(), 1);
+		let sum_value: serde_json::Value = serde_json::from_str(&sum_lines[0])?;
+		assert_eq!(sum_value["kind"], "thread");
+		assert_eq!(sum_value["thread"], "simrec-sum");
+
+		let main_lines = read_lines(&main_buf)?;
+		assert_eq!(main_lines.len(), 3);
+		let rec_value: serde_json::Value = serde_json::from_str(&main_lines[0])?;
+		assert_eq!(rec_value["thread"], "simrec-rec");
+		let process_value: serde_json::Value = serde_json::from_str(&main_lines[1])?;
+		assert_eq!(process_value["kind"], "process");
+		let error_value: serde_json::Value = serde_json::from_str(&main_lines[2])?;
+		assert_eq!(error_value["kind"], "error");
+		Ok(())
+	}
+
+	#[test]
+	fn test_sampler_run_sampler_final_sample_on_stop() -> Result<()> {
+		use std::thread;
+
+		// -- Setup & Fixtures
+		let stop = AtomicBool::new(false);
+		let main_buf = SharedBuf::default();
+		let mut source = FakeSource::default();
+		source.thread_script.push_back(Ok(vec![make_thread("simrec-rec", 2, 0)]));
+		source
+			.thread_script
+			.push_back(Ok(vec![make_thread("simrec-rec", 2, 1_000_000)]));
+		source.process_script.push_back(Ok(make_process(0)));
+		source.process_script.push_back(Ok(make_process(1_000_000)));
+		let setup = SamplerSetup {
+			source: Box::new(source),
+			main_writer: Box::new(main_buf.clone()),
+			sum_writer: None,
+			interval: Duration::from_secs(60),
+		};
+
+		// -- Exec
+		// Stop after the first sample, long before the 60 s interval elapses.
+		thread::scope(|scope| {
+			scope.spawn(|| {
+				thread::sleep(Duration::from_millis(20));
+				stop.store(true, Ordering::Release);
+			});
+			run_sampler(setup, &stop);
+		});
+
+		// -- Check
+		let lines = read_lines(&main_buf)?;
+		let last_line = lines.last().ok_or("expected sampler lines")?;
+		let last: serde_json::Value = serde_json::from_str(last_line)?;
+		assert_eq!(last["kind"], "process");
+		assert_eq!(last["seq"], 1);
+		assert!(last["cpu_pct"].as_f64().is_some());
 		Ok(())
 	}
 

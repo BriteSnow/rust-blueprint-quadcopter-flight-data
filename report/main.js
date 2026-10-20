@@ -4,10 +4,15 @@ import { LABEL_INFO } from "./info.js";
 
 const CAPTURED_DIR = "sandbox/captured/";
 const MOCK_DIR = "sandbox/mock-data/";
-const METRICS_FILE = "capture-metrics.json";
+const METRICS_FILE = "capture-main-metrics.json";
+const LEGACY_METRICS_FILE = "capture-metrics.json";
 const MANIFEST_FILE = "manifest.json";
 const MANIFEST_VERSION = 3;
-const CPU_SAMPLES_FILE = "cpu-samples.jsonl";
+const MAIN_OSTEL_FILE = "capture-main-ostel.jsonl";
+const LEGACY_OSTEL_FILE = "cpu-samples.jsonl";
+const SUM_METRICS_FILE = "capture-sum-metrics.json";
+const SUM_OSTEL_FILE = "capture-sum-ostel.jsonl";
+const SUM_THREAD_NAME = "simrec-sum";
 const TICK_SECONDS = 0.005;
 const DATASET_NAME = /^[dm]\d+$/;
 const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
@@ -19,6 +24,7 @@ const HORIZONS = [
   { label: "10 days", days: 10 },
 ];
 const SCALED_FIELDS = ["ticks_total", "wall_time_s", "output_bytes", "flush_count", "stall_count"];
+const SCALED_SUM_FIELDS = ["rows_emitted", "rows_written", "rows_dropped", "ticks_summarized", "output_bytes"];
 
 const KNOWN_BACKENDS = ["raw", "sqlite-pk-index", "sqlite-all-index", "noop"];
 const FALLBACK_DATASETS = ["m001", "m005", "m010", "m030", "m060", "d001", "d010"];
@@ -39,6 +45,7 @@ const CHARTS = [
   { title: "Flush latency p99", unit: "ms, lower is better", get: (m) => m.flush_ms_p99, format: formatMs },
   { title: "Sim thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.sim?.avg, format: formatPercent },
   { title: "Rec thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.rec?.avg, format: formatPercent },
+  { title: "Sum thread CPU", unit: "% of one core, lower is better", get: (m) => m.sumCpu?.avg, format: formatPercent },
 ];
 
 const TABLE_ROWS = [
@@ -62,6 +69,11 @@ const TABLE_ROWS = [
   { label: "Rec thread CPU", get: (m) => m.cpu?.rec?.avg ?? null, format: formatPercent, better: "low" },
   { label: "Process CPU", get: (m) => m.cpu?.process?.avg ?? null, format: formatPercent, better: "low" },
   { label: "Process RSS peak", get: (m) => m.cpu?.rssPeak ?? null, format: formatBytes, better: "low" },
+  { label: "Sum thread CPU", get: (m) => m.sumCpu?.avg ?? null, format: formatPercent, better: "low" },
+  { label: "Sum rows written", get: (m) => m.sum?.rows_written, format: formatInt },
+  { label: "Sum rows dropped", get: (m) => m.sum?.rows_dropped, format: formatInt, better: "low" },
+  { label: "Sum flush p99", get: (m) => m.sum?.flush_ms_p99, format: formatMs, better: "low" },
+  { label: "Sum output size", get: (m) => m.sum?.output_bytes, format: formatBytes, better: "low" },
 ];
 
 // endregion: --- Constants
@@ -175,12 +187,23 @@ async function loadRunGroup(name, speed) {
 
 async function loadRun(datasetUrl, backend, speed) {
   const base = `${datasetUrl}${encodeURIComponent(backend)}/`;
-  const [metrics, cpuText] = await Promise.all([
-    fetchJson(`${base}${METRICS_FILE}`),
-    fetchText(`${base}${CPU_SAMPLES_FILE}`),
+  const [metrics, cpuText, sumMetrics, sumCpuText] = await Promise.all([
+    fetchFirst(base, [METRICS_FILE, LEGACY_METRICS_FILE], fetchJson),
+    fetchFirst(base, [MAIN_OSTEL_FILE, LEGACY_OSTEL_FILE], fetchText),
+    fetchJson(`${base}${SUM_METRICS_FILE}`),
+    fetchText(`${base}${SUM_OSTEL_FILE}`),
   ]);
   const cpu = summarizeCpu(cpuText);
-  return { backend, speed, cpu, metrics: metrics && { ...metrics, cpu } };
+  const sumCpu = summarizeSumCpu(sumCpuText);
+  return {
+    backend,
+    speed,
+    cpu,
+    sumCpu,
+    sum: sumMetrics,
+    sumOstel: sumCpuText != null,
+    metrics: metrics && { ...metrics, cpu, sumCpu, sum: sumMetrics },
+  };
 }
 
 /// Returns the direct child directory names of a server directory listing, or null when unavailable.
@@ -234,6 +257,17 @@ async function fetchText(url) {
   } catch {
     return null;
   }
+}
+
+/// Returns the first named file that loads, trying the current name before the legacy one.
+async function fetchFirst(base, names, read) {
+  for (const name of names) {
+    const value = await read(`${base}${name}`);
+    if (value != null) {
+      return value;
+    }
+  }
+  return null;
 }
 
 /// Parses JSON Lines one line at a time, skipping blank lines and lines that do not parse, such as a trailing partial line.
@@ -291,6 +325,17 @@ function pctStats(values) {
   const total = numbers.reduce((sum, value) => sum + value, 0);
   const peak = numbers.reduce((max, value) => Math.max(max, value), 0);
   return { avg: total / numbers.length, peak };
+}
+
+/// Summarizes the `simrec-sum` thread lines of `capture-sum-ostel.jsonl`, or returns null when the file is missing.
+function summarizeSumCpu(text) {
+  if (text == null) {
+    return null;
+  }
+  const values = parseJsonLines(text)
+    .filter((line) => line.kind === "thread" && line.thread === SUM_THREAD_NAME)
+    .map((line) => line.cpu_pct);
+  return pctStats(values);
 }
 
 // endregion: --- Loading
@@ -542,7 +587,11 @@ function renderWarnings(dataset, runs) {
   }
   const withoutCpu = runs.filter((run) => !run.cpu).length;
   if (withoutCpu > 0) {
-    messages.push(`${withoutCpu} run(s) without ${CPU_SAMPLES_FILE}: CPU is not shown for them.`);
+    messages.push(`${withoutCpu} run(s) without ${MAIN_OSTEL_FILE}: CPU is not shown for them.`);
+  }
+  const withoutSum = runs.filter((run) => run.sumOstel && !run.sum).length;
+  if (withoutSum > 0) {
+    messages.push(`${withoutSum} run(s) without ${SUM_METRICS_FILE}: summary is incomplete, failed, or still running.`);
   }
   if (!dataset.listed) {
     messages.push("Directory listing is unavailable, so runs were probed by known names only.");
@@ -581,6 +630,7 @@ function renderRunCard(run, dataset) {
     ["Finish", formatMs(metrics.finish_ms)],
     ["Config", `flush ${metrics.flush_ms} ms, ring ${formatInt(metrics.ring_cap)}`],
     ...cpuRows(run.cpu),
+    ...(run.sumOstel || run.sum ? sumRows(run) : []),
   ];
   card.append(
     h(
@@ -613,6 +663,16 @@ function cpuRows(cpu) {
     ["Rec thread CPU", formatCpuStat(cpu?.rec)],
     ["Process CPU", formatCpuStat(cpu?.process)],
     ["Process RSS peak", formatOptional(cpu?.rssPeak, formatBytes)],
+  ];
+}
+
+function sumRows(run) {
+  return [
+    ["Sum thread CPU", formatCpuStat(run.sumCpu)],
+    ["Sum rows written", formatOptional(run.sum?.rows_written, formatInt)],
+    ["Sum rows dropped", formatOptional(run.sum?.rows_dropped, formatInt)],
+    ["Sum flush p99", formatOptional(run.sum?.flush_ms_p99, formatMs)],
+    ["Sum output size", formatOptional(run.sum?.output_bytes, formatBytes)],
   ];
 }
 
@@ -731,7 +791,7 @@ function renderHorizonToggle(dataset) {
     return null;
   }
   const note = state.horizon.days
-    ? `Output size, ticks, wall time, flush count, and stalls are scaled by ${formatInt(horizonFactor(dataset, state.horizon))}x for ${dataset.name}. Rates and per-tick values are unchanged.`
+    ? `Output size, ticks, wall time, flush count, stalls, and summary rows and output are scaled by ${formatInt(horizonFactor(dataset, state.horizon))}x for ${dataset.name}. Rates and per-tick values are unchanged.`
     : null;
   return h(
     "section",
@@ -844,6 +904,14 @@ function extrapolateMetrics(metrics, factor) {
   for (const field of SCALED_FIELDS) {
     if (typeof scaled[field] === "number") {
       scaled[field] *= factor;
+    }
+  }
+  if (metrics.sum) {
+    scaled.sum = { ...metrics.sum };
+    for (const field of SCALED_SUM_FIELDS) {
+      if (typeof scaled.sum[field] === "number") {
+        scaled.sum[field] *= factor;
+      }
     }
   }
   return scaled;

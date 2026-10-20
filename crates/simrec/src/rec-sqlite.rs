@@ -1,11 +1,11 @@
 use crate::mock_in::CHANNELS;
 use crate::recorder::{Recorder, Tick};
+use crate::sqlite_common::{create_new_database_file, database_bytes, open_wal_database};
 use crate::{Error, Result};
 use rusqlite::{params, Connection};
 use simple_fs::SPath;
-use std::fs::{self, OpenOptions};
 
-const DATABASE_FILENAME: &str = "capture.sqlite";
+const DATABASE_FILENAME: &str = "capture-main.sqlite";
 const INSERT_SQL: &str = "INSERT INTO samples (ts_epoch_micro, rotor_fl_rpm, rotor_fr_rpm, rotor_rl_rpm, rotor_rr_rpm, accel_x_mps2, accel_y_mps2, accel_z_mps2, gyro_x_rads, gyro_y_rads, gyro_z_rads) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
 
 pub struct SqliteRecorder {
@@ -16,11 +16,8 @@ pub struct SqliteRecorder {
 impl SqliteRecorder {
 	pub fn new(directory: &SPath, with_index: bool) -> Result<Self> {
 		let database_path = directory.join(DATABASE_FILENAME);
-		let file = OpenOptions::new().write(true).create_new(true).open(&database_path)?;
-		drop(file);
-
-		let connection = Connection::open(&database_path)?;
-		connection.pragma_update(None, "journal_mode", "WAL")?;
+		create_new_database_file(&database_path)?;
+		let connection = open_wal_database(&database_path)?;
 		let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
 		if !journal_mode.eq_ignore_ascii_case("wal") {
 			return Err(Error::custom(format!(
@@ -65,35 +62,7 @@ impl SqliteRecorder {
 	}
 
 	fn recording_bytes(&self) -> Result<u64> {
-		let database_metadata = fs::metadata(&self.database_path)?;
-		if !database_metadata.is_file() {
-			return Err(Error::custom(format!(
-				"SQLite database {} is not a regular file",
-				self.database_path
-			)));
-		}
-
-		let mut output_bytes = database_metadata.len();
-		for suffix in ["-wal", "-shm"] {
-			let sidecar_path = SPath::new(format!("{}{suffix}", self.database_path));
-			match fs::metadata(&sidecar_path) {
-				Ok(metadata) if metadata.is_file() => {
-					output_bytes = output_bytes
-						.checked_add(metadata.len())
-						.ok_or_else(|| Error::custom("SQLite recording size overflow"))?;
-				}
-				Ok(_) => {
-					return Err(Error::custom(format!(
-						"SQLite sidecar {} is not a regular file",
-						sidecar_path
-					)));
-				}
-				Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-				Err(error) => return Err(error.into()),
-			}
-		}
-
-		Ok(output_bytes)
+		database_bytes(&self.database_path)
 	}
 }
 
@@ -150,6 +119,7 @@ mod tests {
 
 	use super::*;
 	use crate::recorder::CHANNEL_COUNT;
+	use std::fs;
 
 	#[test]
 	fn test_rec_sqlite_write_batch_and_finish() -> Result<()> {

@@ -27,4 +27,9 @@ export const LABEL_INFO = {
   "Rec thread CPU": "Average CPU of the recorder thread (simrec-rec), as a percent of one core. Lower means less recording overhead.",
   "Process CPU": "Average CPU of the whole capture process, as a percent of one core. Lower is better.",
   "Process RSS peak": "Peak resident memory of the capture process, in bytes. Lower is better.",
+  "Sum thread CPU": "Average CPU of the summary thread (simrec-sum), as a percent of one core. Lower means less summary overhead.",
+  "Sum rows written": "Per-second summary rows committed to capture-sum.sqlite.",
+  "Sum rows dropped": "Per-second summary rows dropped because the summary fell behind or failed. Lower is better.",
+  "Sum flush p99": "99th percentile summary commit duration, in milliseconds. Lower is better.",
+  "Sum output size": "Size of capture-sum.sqlite, including its WAL and shared-memory files. Lower is better.",
 };

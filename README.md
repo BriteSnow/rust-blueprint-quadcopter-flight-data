@@ -81,20 +81,22 @@ Options:
 Replays a mock dataset through the capture pipeline into exactly one backend.
 
 ```sh
+# -- Max speed
 cargo run --release -p simrec -- --noop --duration d1 --speed max
 
 cargo run --release -p simrec -- --raw --duration d1 --speed max
 cargo run --release -p simrec -- --sql --duration d1 --speed max
 cargo run --release -p simrec -- --sql --duration d1 --speed max --with-index
+cargo run --release -p simrec -- --sql --duration d1 --speed max --no-sum
 
+# -- Realtime
 # real mode (just 1 minute window, put m5, m10, or m30 to have bigger capture window)
-cargo run --release -p simrec -- --raw --duration m1 --speed real
-cargo run --release -p simrec -- --sql --duration m1 --speed real
-cargo run --release -p simrec -- --sql --duration m1 --speed real --with-index
-
 cargo run --release -p simrec -- --raw --duration m5 --speed real
 cargo run --release -p simrec -- --sql --duration m5 --speed real
+# for comparison
 cargo run --release -p simrec -- --sql --duration m5 --speed real --with-index
+
+
 ```
 
 Help output from `cargo run --release -p simrec -- --help`:
@@ -115,6 +117,9 @@ Options:
       --speed <SPEED>        [default: real] [possible values: real, max]
       --ring-cap <RING_CAP>  [default: 4096]
       --sample-ms <SAMPLE_MS>  [default: 1000]
+      --no-sum
+      --sum-flush-s <SUM_FLUSH_S>  [default: 1]
+      --sum-ring-cap <SUM_RING_CAP>  [default: 64]
   -h, --help                 Print help
   -V, --version              Print version
 ```
@@ -133,7 +138,9 @@ Options:
 
 - `--sample-ms` sets the CPU sampling interval in milliseconds and must be positive.
 
-- Worker threads are named `simrec-sim`, `simrec-rec`, and `simrec-sampler`, so their CPU usage can be told apart.
+- `--no-sum` disables the per-second summary, so no `simrec-sum` thread and no `capture-sum-*` files are created. `--sum-flush-s` (default 1, positive) and `--sum-ring-cap` (default 64, 1 to 4096) conflict with it.
+
+- Worker threads are named `simrec-sim`, `simrec-rec`, `simrec-sum`, and `simrec-sampler`, so their CPU usage can be told apart.
 
 - A CPU sampler failure never fails the capture.
 
@@ -143,9 +150,21 @@ Options:
 
 ## Output
 
-- Recordings go to `<out>/captured/<name>-<speed>/<backend>/`, such as `sandbox/captured/d001-max/sqlite-pk-index/capture.sqlite`, `sandbox/captured/d001-real/sqlite-all-index/capture.sqlite`, or `sandbox/captured/d001-max/raw/seg-000000.bin`.
+- Each run writes to `<out>/captured/<name>-<speed>/<backend>/`, with these files:
 
-- `capture-metrics.json` is published in each backend folder only after successful replay and tick conservation.
+| File | Written by | Notes |
+| ---- | ---------- | ----- |
+| `capture-main.sqlite` | `simrec-rec` | SQLite backends only |
+| `capture-main-seg-000000.bin`, ... | `simrec-rec` | raw backend only |
+| `capture-sum.sqlite` | `simrec-sum` | per-second summary, every backend including `noop` |
+| `capture-main-metrics.json` | main thread | main recording metrics |
+| `capture-sum-metrics.json` | main thread | summary metrics |
+| `capture-main-ostel.jsonl` | `simrec-sampler` | CPU samples for all threads except `simrec-sum`, plus the process |
+| `capture-sum-ostel.jsonl` | `simrec-sampler` | CPU samples for the `simrec-sum` thread |
+
+- `capture-main-metrics.json` is published in each backend folder only after successful replay and tick conservation.
+
+- `capture-sum-metrics.json` is published only after the summary thread is finalized and its conservation check passes. Its absence marks an incomplete summary.
 
 - Raw records are 48 bytes: little-endian `i64` `ts_epoch_micro` (epoch microseconds) followed by ten `f32` values. A segment file holds one hour (720,000 ticks), 34,560,000 bytes.
 
@@ -153,9 +172,9 @@ Options:
 
 - Output directories must be new or empty. Nothing is removed automatically.
 
-- `cpu-samples.jsonl` is written in each backend folder for every backend, including `--noop`. It is not covered by the metrics completion marker, so it may be partial after a failed run.
+- `capture-main-ostel.jsonl` and `capture-sum-ostel.jsonl` are written in each backend folder for every backend, including `--noop`. They are not covered by the metrics completion markers, so they may be partial after a failed run.
 
-### cpu-samples.jsonl
+### capture-main-ostel.jsonl
 
 One compact JSON object per line, with a `kind` discriminator. All lines for one sample share the same `seq` and `ts_epoch_us`.
 
@@ -173,6 +192,15 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 - Group by `thread` and plot `cpu_pct` against `ts_epoch_us`.
 
+- `capture-sum-ostel.jsonl` has the same schema and holds only the `simrec-sum` thread lines. Process lines stay in `capture-main-ostel.jsonl`, and both files share `seq` and `ts_epoch_us`.
+
+## Summary Database
+
+- `capture-sum.sqlite` holds one row per epoch second in table `sec`, with `tick_count` and `_min`, `_max`, `_avg` per channel.
+- The primary key is `ts_epoch_micro`, the start of the epoch second. Rows are committed every `--sum-flush-s` seconds.
+- The summary never slows the main capture. When its ring is full, rows are dropped and counted in `capture-sum-metrics.json`.
+- Readers can open the file while it is written, because it uses WAL mode.
+
 ## Limitations
 
 - Completion markers and metrics show success, not crash durability.
@@ -188,6 +216,8 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 ## Status
 
 - Implemented: mocker (10-channel tick), validated replay, no-op, raw, and SQLite backends.
+
+- Implemented: per-second summary database (`capture-sum.sqlite`) on its own thread, with its own metrics and OS telemetry.
 
 - Datasets and captures from manifest version 2 (20-byte ticks, 5 channels) must be regenerated.
 

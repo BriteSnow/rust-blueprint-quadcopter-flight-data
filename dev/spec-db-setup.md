@@ -109,6 +109,16 @@ CREATE INDEX idx_samples_gyro_z_rads ON samples (gyro_z_rads);
 - Finalization closes the connection, then counts the database file plus any remaining `-wal` and `-shm` files.
 - Values are always bound as parameters, never formatted into SQL strings.
 
+## Summary Database
+
+- Written by the `simrec-sum` thread into `capture-sum.sqlite`, beside the main recording in `capture-main.sqlite`. It is written for every backend, including `noop`, and is skipped with `--no-sum`.
+- Uses the same WAL and `synchronous = NORMAL` setup as the main recording, from the shared helpers in `sqlite-common.rs`.
+- Table `sec` has `ts_epoch_micro INTEGER PRIMARY KEY` (start of the epoch second), `tick_count INTEGER NOT NULL`, then `_min`, `_max`, and `_avg` `REAL` columns per channel in channel order, 32 columns in total.
+- `avg = sum / tick_count`, computed in `f64`. A full second has `tick_count = 200`.
+- Each nonempty commit is one transaction with a cached prepared statement binding 32 values. Commits happen every `--sum-flush-s` seconds and at disconnect.
+- Primary key only, no value indexes, so a day is 86,400 rows.
+- Finalization closes the connection, then counts the database plus any remaining `-wal` and `-shm` files.
+
 ## Known Limits
 
 - Not crash-safe. `synchronous = NORMAL` can lose the latest commits after power failure. See `dev/spec-overall.md`.

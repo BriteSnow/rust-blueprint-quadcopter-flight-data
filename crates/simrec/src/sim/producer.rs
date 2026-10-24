@@ -1,5 +1,5 @@
-use crate::mock_in::{MockInput, TICK_NS};
-use crate::recorder::Tick;
+use super::input::{MockInput, TICK_NS};
+use lib_common::Tick;
 use crate::support::{check_cancelled, idle_wait, wait_until};
 use crate::Result;
 use lib_common::event_base::SyncSpscTx;
@@ -89,7 +89,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
-	use crate::recorder::CHANNEL_COUNT;
+	use lib_common::channels::CHANNEL_COUNT;
 	use lib_common::event_base::new_spsc_bounded;
 
 	#[test]

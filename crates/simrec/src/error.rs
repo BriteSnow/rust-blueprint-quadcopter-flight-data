@@ -15,12 +15,12 @@ pub enum Error {
 	#[from]
 	EventBase(EventBaseError),
 
+	#[from]
+	Db(lib_db::Error),
+
 	// -- Externals
 	#[from]
 	Io(std::io::Error),
-
-	#[from]
-	Sqlite(rusqlite::Error),
 
 	#[from]
 	Json(serde_json::Error),
@@ -46,8 +46,8 @@ impl std::error::Error for Error {
 	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
 		match self {
 			Self::EventBase(error) => Some(error),
+			Self::Db(error) => Some(error),
 			Self::Io(error) => Some(error),
-			Self::Sqlite(error) => Some(error),
 			Self::Json(error) => Some(error),
 			Self::Custom(_) | Self::Cancelled => None,
 		}

@@ -6,6 +6,8 @@ Proof of concept comparing SQLite WAL capture with append-only raw binary captur
 
 - `crates/lib-common/`: shared named, bounded SPSC facade.
 
+- `crates/lib-db/`: SQLite handles and schemas, read-write for simrec and read-only for the console.
+
 - `crates/mocker/`: deterministic mock dataset generator.
 
 - `crates/simrec/`: replay pipeline, recording backends, and metrics.
@@ -119,7 +121,7 @@ Options:
       --sample-ms <SAMPLE_MS>  [default: 1000]
       --no-sum
       --sum-flush-s <SUM_FLUSH_S>  [default: 1]
-      --sum-ring-cap <SUM_RING_CAP>  [default: 64]
+      --sum-ring-cap <SUM_RING_CAP>  [default: 256]
   -h, --help                 Print help
   -V, --version              Print version
 ```
@@ -138,9 +140,9 @@ Options:
 
 - `--sample-ms` sets the CPU sampling interval in milliseconds and must be positive.
 
-- `--no-sum` disables the per-second summary, so no `simrec-sum` thread and no `capture-sum-*` files are created. `--sum-flush-s` (default 1, positive) and `--sum-ring-cap` (default 64, 1 to 4096) conflict with it.
+- `--no-sum` disables the summary, so no `simrec-rec-sum` thread and no `capture-sum-*` files are created. `--sum-flush-s` (default 1, positive) and `--sum-ring-cap` (default 256, 1 to 65536) conflict with it. `--sum-ring-cap` is the `dispatch-rec-sum` ring capacity in tick-batch messages.
 
-- Worker threads are named `simrec-sim`, `simrec-rec`, `simrec-sum`, and `simrec-sampler`, so their CPU usage can be told apart.
+- Worker threads are named `simrec-sim`, `simrec-dispatch`, `simrec-rec-main`, `simrec-rec-sum`, and `simrec-sampler`, so their CPU usage can be told apart.
 
 - A CPU sampler failure never fails the capture.
 
@@ -154,13 +156,13 @@ Options:
 
 | File | Written by | Notes |
 | ---- | ---------- | ----- |
-| `capture-main.sqlite` | `simrec-rec` | SQLite backends only |
-| `capture-main-seg-000000.bin`, ... | `simrec-rec` | raw backend only |
-| `capture-sum.sqlite` | `simrec-sum` | per-second summary, every backend including `noop` |
+| `capture-main.sqlite` | `simrec-rec-main` | SQLite backends only |
+| `capture-main-seg-000000.bin`, ... | `simrec-rec-main` | raw backend only |
+| `capture-sum.sqlite` | `simrec-rec-sum` | 2 Hz summary, every backend including `noop` |
 | `capture-main-metrics.json` | main thread | main recording metrics |
 | `capture-sum-metrics.json` | main thread | summary metrics |
-| `capture-main-ostel.jsonl` | `simrec-sampler` | CPU samples for all threads except `simrec-sum`, plus the process |
-| `capture-sum-ostel.jsonl` | `simrec-sampler` | CPU samples for the `simrec-sum` thread |
+| `capture-main-ostel.jsonl` | `simrec-sampler` | CPU samples for all threads except `simrec-rec-sum`, plus the process |
+| `capture-sum-ostel.jsonl` | `simrec-sampler` | CPU samples for the `simrec-rec-sum` thread |
 
 - `capture-main-metrics.json` is published in each backend folder only after successful replay and tick conservation.
 
@@ -196,9 +198,10 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 ## Summary Database
 
-- `capture-sum.sqlite` holds one row per epoch second in table `sec`, with `tick_count` and `_min`, `_max`, `_avg` per channel.
-- The primary key is `ts_epoch_micro`, the start of the epoch second. Rows are committed every `--sum-flush-s` seconds.
-- The summary never slows the main capture. When its ring is full, rows are dropped and counted in `capture-sum-metrics.json`.
+- `capture-sum.sqlite` holds one row per 500 ms bucket in table `summary`, with `tick_count` and `_min`, `_max`, `_avg` per channel.
+- The primary key is `ts_epoch_micro`, the bucket start. Rows are committed every `--sum-flush-s` seconds.
+- Table `meta` records `schema_version`, `bucket_us`, `channels`, and `start_epoch_us`, so readers never hardcode the bucket width.
+- The summary never slows the main capture. When the dispatcher finds the `dispatch-rec-sum` ring full, it drops the whole tick batch and counts it in `capture-sum-metrics.json`.
 - Readers can open the file while it is written, because it uses WAL mode.
 
 ## Limitations
@@ -217,7 +220,9 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 - Implemented: mocker (10-channel tick), validated replay, no-op, raw, and SQLite backends.
 
-- Implemented: per-second summary database (`capture-sum.sqlite`) on its own thread, with its own metrics and OS telemetry.
+- Implemented: layered simrec (`sim`, `dispatcher`, `rec_main`, `rec_sum`), with `lib-db` owning every SQLite access.
+
+- Implemented: 2 Hz summary database (`capture-sum.sqlite`, table `summary` plus `meta`) on its own thread, with its own metrics and OS telemetry.
 
 - Datasets and captures from manifest version 2 (20-byte ticks, 5 channels) must be regenerated.
 

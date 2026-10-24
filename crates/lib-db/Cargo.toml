@@ -1,0 +1,22 @@
+[package]
+name = "lib-db"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# -- Internal
+lib-common.workspace = true
+# -- Databases
+rusqlite.workspace = true
+# -- Others
+derive_more.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

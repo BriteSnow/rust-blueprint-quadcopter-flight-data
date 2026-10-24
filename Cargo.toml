@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lib-common", "crates/mocker", "crates/simrec"]
+members = ["crates/lib-common", "crates/lib-db", "crates/mocker", "crates/simrec"]
 resolver = "3"
 
 [workspace.package]

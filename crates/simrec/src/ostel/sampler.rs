@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 pub const MAIN_OSTEL_FILE_NAME: &str = "capture-main-ostel.jsonl";
 pub const SUM_OSTEL_FILE_NAME: &str = "capture-sum-ostel.jsonl";
-pub const SUM_THREAD_NAME: &str = "simrec-sum";
 
 pub trait CpuSource: Send {
 	fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>>;
@@ -22,6 +21,7 @@ pub struct SamplerSetup {
 	pub source: Box<dyn CpuSource>,
 	pub main_writer: Box<dyn Write + Send>,
 	pub sum_writer: Option<Box<dyn Write + Send>>,
+	pub sum_thread_name: &'static str,
 	pub interval: Duration,
 }
 
@@ -53,11 +53,13 @@ pub fn run_sampler(setup: SamplerSetup, stop: &AtomicBool) {
 		mut source,
 		main_writer,
 		sum_writer,
+		sum_thread_name,
 		interval,
 	} = setup;
 	let mut writers = SampleWriters {
 		main: main_writer,
 		sum: sum_writer,
+		sum_thread_name,
 	};
 	let mut state = SamplerState::default();
 	let mut next = Instant::now();
@@ -206,18 +208,20 @@ fn take_sample(state: &mut SamplerState, source: &mut dyn CpuSource, writers: &m
 	}
 }
 
-/// Routes each sample line to the main file, or to the sum file for the `simrec-sum` thread.
+/// Routes each sample line to the main file, or to the sum file for the summary thread.
 struct SampleWriters {
 	main: Box<dyn Write + Send>,
 	sum: Option<Box<dyn Write + Send>>,
+	sum_thread_name: &'static str,
 }
 
 impl SampleWriters {
 	fn route(&mut self, lines: &[SampleLine]) -> std::io::Result<()> {
+		let sum_thread_name = self.sum_thread_name;
 		match self.sum.as_deref_mut() {
 			Some(sum) => {
 				let (sum_lines, main_lines): (Vec<&SampleLine>, Vec<&SampleLine>) =
-					lines.iter().partition(|line| is_sum_line(line));
+					lines.iter().partition(|line| is_sum_line(line, sum_thread_name));
 				write_lines(sum, sum_lines)?;
 				write_lines(self.main.as_mut(), main_lines)
 			}
@@ -226,8 +230,8 @@ impl SampleWriters {
 	}
 }
 
-fn is_sum_line(line: &SampleLine) -> bool {
-	matches!(line, SampleLine::Thread { thread, .. } if thread == SUM_THREAD_NAME)
+fn is_sum_line(line: &SampleLine, sum_thread_name: &str) -> bool {
+	matches!(line, SampleLine::Thread { thread, .. } if thread == sum_thread_name)
 }
 
 fn write_lines<'a>(writer: &mut dyn Write, lines: impl IntoIterator<Item = &'a SampleLine>) -> std::io::Result<()> {
@@ -350,6 +354,7 @@ mod tests {
 			source: Box::new(source),
 			main_writer: Box::new(buf.clone()),
 			sum_writer: None,
+			sum_thread_name: "simrec-sum",
 			interval: Duration::from_millis(1),
 		};
 
@@ -374,6 +379,7 @@ mod tests {
 			source: Box::new(FakeSource::default()),
 			main_writer: Box::new(buf.clone()),
 			sum_writer: None,
+			sum_thread_name: "simrec-sum",
 			interval: Duration::from_millis(1),
 		};
 
@@ -401,6 +407,7 @@ mod tests {
 			source: Box::new(source),
 			main_writer: Box::new(main_buf.clone()),
 			sum_writer: Some(Box::new(sum_buf.clone())),
+			sum_thread_name: "simrec-sum",
 			interval: Duration::from_millis(1),
 		};
 
@@ -444,6 +451,7 @@ mod tests {
 			source: Box::new(source),
 			main_writer: Box::new(main_buf.clone()),
 			sum_writer: None,
+			sum_thread_name: "simrec-sum",
 			interval: Duration::from_secs(60),
 		};
 

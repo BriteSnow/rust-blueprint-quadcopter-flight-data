@@ -1,4 +1,5 @@
-use crate::recorder::{Tick, CHANNEL_COUNT};
+use lib_common::channels::CHANNEL_COUNT;
+use lib_common::Tick;
 use crate::{Error, Result};
 use serde::Deserialize;
 use simple_fs::SPath;
@@ -17,18 +18,7 @@ pub const TICK_NS: u64 = 5_000_000;
 pub const TICK_PERIOD_US: i64 = 5_000;
 pub const BYTES_PER_TICK: u64 = CHANNEL_COUNT as u64 * 4;
 const MANIFEST_VERSION: u32 = 3;
-pub const CHANNELS: [&str; CHANNEL_COUNT] = [
-	"rotor_fl_rpm",
-	"rotor_fr_rpm",
-	"rotor_rl_rpm",
-	"rotor_rr_rpm",
-	"accel_x_mps2",
-	"accel_y_mps2",
-	"accel_z_mps2",
-	"gyro_x_rads",
-	"gyro_y_rads",
-	"gyro_z_rads",
-];
+pub use lib_common::channels::CHANNELS;
 
 impl MockInput {
 	pub fn open(directory: &SPath) -> Result<Self> {
@@ -62,6 +52,10 @@ impl MockInput {
 
 	pub fn tick_count(&self) -> u64 {
 		self.tick_limit
+	}
+
+	pub fn start_epoch_us(&self) -> i64 {
+		self.manifest.start_epoch_us
 	}
 
 	pub fn with_tick_limit(mut self, ticks: u64) -> Result<Self> {

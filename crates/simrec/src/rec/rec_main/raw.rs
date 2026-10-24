@@ -1,5 +1,7 @@
-use crate::recorder::{Recorder, Tick, CHANNEL_COUNT};
+use super::recorder::Recorder;
 use crate::{Error, Result};
+use lib_common::channels::CHANNEL_COUNT;
+use lib_common::Tick;
 use simple_fs::SPath;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};

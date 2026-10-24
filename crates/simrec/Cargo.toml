@@ -10,8 +10,7 @@ workspace = true
 [dependencies]
 # -- Internal
 lib-common.workspace = true
-# -- Async / Event
-tokio.workspace = true
+lib-db = { path = "../lib-db" }
 # -- Serde / Format
 serde.workspace = true
 serde_json.workspace = true
@@ -19,5 +18,7 @@ serde_json.workspace = true
 clap.workspace = true
 # -- Others
 simple-fs.workspace = true
-rusqlite.workspace = true
 derive_more.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true

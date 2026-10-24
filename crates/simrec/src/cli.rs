@@ -1,4 +1,4 @@
-use crate::mock_in::TICK_NS;
+use crate::sim::TICK_NS;
 use crate::{Error, Result};
 use clap::{ArgGroup, Parser};
 use simple_fs::SPath;
@@ -43,7 +43,7 @@ pub struct CliCmd {
 	#[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "no_sum")]
 	pub sum_flush_s: u64,
 
-	#[arg(long, default_value_t = 64, value_parser = sum_ring_capacity, conflicts_with = "no_sum")]
+	#[arg(long, default_value_t = 256, value_parser = sum_ring_capacity, conflicts_with = "no_sum")]
 	pub sum_ring_cap: usize,
 }
 
@@ -70,8 +70,8 @@ fn sum_ring_capacity(value: &str) -> core::result::Result<usize, String> {
 	let capacity = value
 		.parse::<usize>()
 		.map_err(|_| "sum ring capacity must be an integer".to_string())?;
-	if !(1..=4_096).contains(&capacity) {
-		return Err("sum ring capacity must be between 1 and 4096 messages".to_string());
+	if !(1..=65_536).contains(&capacity) {
+		return Err("sum ring capacity must be between 1 and 65536 messages".to_string());
 	}
 	Ok(capacity)
 }
@@ -172,7 +172,7 @@ mod tests {
 		assert_eq!(command.sample_ms, 1000);
 		assert!(!command.no_sum);
 		assert_eq!(command.sum_flush_s, 1);
-		assert_eq!(command.sum_ring_cap, 64);
+		assert_eq!(command.sum_ring_cap, 256);
 		Ok(())
 	}
 
@@ -211,7 +211,7 @@ mod tests {
 			&["simrec", "--noop", "--no-sum", "--sum-ring-cap", "64"],
 			&["simrec", "--noop", "--sum-flush-s", "0"],
 			&["simrec", "--noop", "--sum-ring-cap", "0"],
-			&["simrec", "--noop", "--sum-ring-cap", "4097"],
+			&["simrec", "--noop", "--sum-ring-cap", "65537"],
 			&["simrec", "--noop", "--out", ""],
 		];
 

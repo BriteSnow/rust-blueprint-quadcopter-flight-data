@@ -74,9 +74,9 @@ Backends in each run folder are found the same way:
 - **Dataset panel:** shows the selected dataset at the selected speed.
   - Header: name, duration, expected ticks for the duration, and rate. A second line shows the manifest source folder, its tick count, input size, and seed, because a shared manifest may describe a longer dataset. A third line lists the manifest channels and the bytes per tick, so the ten-channel tick layout is visible.
   - Warnings: missing manifest, a manifest version older than 3, mixed run configurations (`flush_ms`, `ring_cap`), incomplete runs, summary telemetry without `capture-sum-metrics.json`, and probe-only discovery.
-  - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, finish time, configuration, sim thread, rec thread, and process CPU (average and peak), process RSS peak, and the tick conservation badge. A run without metrics still shows its CPU when its samples file exists.
-  - Summary cost: sum thread CPU (average and peak), rows written and dropped, sum flush p99, and sum output size, shown when summary files exist.
-  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, flush p99, and sim, rec, and sum thread CPU. Charts redraw on resize and support HiDPI screens.
+  - Run cards: throughput, wall time, ticks, speedup, output size, bytes per tick, flush p50, p99, and max, stalls, dispatch stalls, finish time, configuration, sim, dispatch, rec, and process CPU (average and peak), process RSS peak, and the tick conservation badge. A run without metrics still shows its CPU when its samples file exists.
+  - Summary cost: sum thread CPU (average and peak), rows written, ticks dropped, batches dropped, partial rows, sum flush p99, and sum output size, shown when summary files exist. New captures fill the dispatcher drop counters and `partial_rows`; older captures render `n/a`.
+  - Charts: horizontal bar charts drawn with Canvas 2D for throughput, output size, bytes per tick, flush p99, and sim, dispatch, rec, and sum thread CPU. Charts redraw on resize and support HiDPI screens.
   - Comparison table: one row per metric and one column per backend, including the summary rows. The best value in a row is highlighted. Cells that display the same text as the best value are all highlighted.
 
 ## Derived Values
@@ -85,6 +85,7 @@ Backends in each run folder are found the same way:
 - `bytes_per_tick = output_bytes / ticks_total`. Shown as `n/a` when no ticks were recorded.
 - Input size: `tick_count * bytes_per_tick` from the manifest.
 - CPU averages are the mean of the non-null `cpu_pct` values in `cpu-samples.jsonl`, and CPU peaks are the maximum. The first sample of each thread is null and is excluded.
+- The report reads `simrec-rec-main` and `simrec-rec-sum` first, then falls back to the legacy `simrec-rec` and `simrec-sum`, so a capture never mixes both thread names.
 - The best value is the minimum or the maximum, depending on the metric. At least two recording backends must have a value. `noop` is excluded because it writes no recording.
 - `noop` is also left out of the output size and bytes per tick charts.
 - `noop` stays in the CPU charts, where it shows the pipeline overhead without recording.

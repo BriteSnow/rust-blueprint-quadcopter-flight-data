@@ -1,16 +1,13 @@
-use crate::rec::{ConsumerStats, MAX_BATCH_TICKS};
+use super::publish::publish_json;
+use crate::dispatcher::DispatchStats;
+use crate::rec::rec_main::{ConsumerStats, MAX_BATCH_TICKS};
 use crate::sim::{ProducerStats, MAX_PENDING_TICKS};
-use crate::sum::SumStats;
-use crate::sum_acc::SumFeedStats;
 use crate::Result;
 use serde::Serialize;
 use simple_fs::SPath;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::time::Duration;
 
 pub const METRICS_FILE_NAME: &str = "capture-main-metrics.json";
-pub const SUM_METRICS_FILE_NAME: &str = "capture-sum-metrics.json";
 
 #[derive(Serialize)]
 pub struct Metrics {
@@ -24,6 +21,7 @@ pub struct Metrics {
 	wall_time_s: f64,
 	ticks_per_s: f64,
 	stall_count: u64,
+	dispatch_stall_count: u64,
 	max_pending_len: usize,
 	flush_count: u64,
 	flush_ms_p50: f64,
@@ -34,73 +32,6 @@ pub struct Metrics {
 	output_bytes: u64,
 }
 
-#[derive(Serialize)]
-pub struct SumMetrics {
-	backend: &'static str,
-	speed: String,
-	sum_flush_s: u64,
-	sum_ring_cap: usize,
-	rows_emitted: u64,
-	rows_written: u64,
-	rows_dropped: u64,
-	ticks_summarized: u64,
-	max_pending_rows: usize,
-	wall_time_s: f64,
-	rows_per_s: f64,
-	flush_count: u64,
-	flush_ms_p50: f64,
-	flush_ms_p99: f64,
-	flush_ms_max: f64,
-	percentile_method: &'static str,
-	finish_ms: f64,
-	output_bytes: u64,
-}
-
-impl SumMetrics {
-	pub fn from_run(
-		speed: String,
-		sum_flush_s: u64,
-		sum_ring_cap: usize,
-		feed: SumFeedStats,
-		stats: SumStats,
-	) -> Self {
-		Self {
-			backend: "sqlite-sum",
-			speed,
-			sum_flush_s,
-			sum_ring_cap,
-			rows_emitted: feed.rows_emitted,
-			rows_written: stats.rows_written,
-			rows_dropped: feed.rows_dropped,
-			ticks_summarized: stats.ticks_summarized,
-			max_pending_rows: feed.max_pending_rows,
-			wall_time_s: stats.wall_time_s,
-			rows_per_s: if stats.wall_time_s > 0.0 {
-				stats.rows_written as f64 / stats.wall_time_s
-			} else {
-				0.0
-			},
-			flush_count: stats.flushes.count(),
-			flush_ms_p50: stats.flushes.percentile_ms(50),
-			flush_ms_p99: stats.flushes.percentile_ms(99),
-			flush_ms_max: stats.flushes.max_ns as f64 / 1_000_000.0,
-			percentile_method: "nearest-rank power-of-two nanosecond bucket upper bound",
-			finish_ms: stats.finish_ms,
-			output_bytes: stats.output_bytes,
-		}
-	}
-
-	pub fn publish(&self, directory: &SPath) -> Result<()> {
-		publish_json(directory, SUM_METRICS_FILE_NAME, self)
-	}
-}
-
-pub struct FlushHistogram {
-	bins: [u64; 65],
-	count: u64,
-	max_ns: u64,
-}
-
 impl Metrics {
 	pub fn from_run(
 		backend: &'static str,
@@ -109,6 +40,7 @@ impl Metrics {
 		ring_cap: usize,
 		elapsed: Duration,
 		produced: ProducerStats,
+		dispatched: DispatchStats,
 		recorded: ConsumerStats,
 	) -> Self {
 		let wall_time_s = elapsed.as_secs_f64();
@@ -127,6 +59,7 @@ impl Metrics {
 				0.0
 			},
 			stall_count: produced.stall_count,
+			dispatch_stall_count: dispatched.main_stall_count,
 			max_pending_len: produced.max_pending_len,
 			flush_count: recorded.flushes.count(),
 			flush_ms_p50: recorded.flushes.percentile_ms(50),
@@ -143,68 +76,6 @@ impl Metrics {
 	}
 }
 
-impl FlushHistogram {
-	pub fn record(&mut self, elapsed: Duration) {
-		let nanos = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
-		let bucket = if nanos <= 1 {
-			0
-		} else {
-			(u64::BITS - (nanos - 1).leading_zeros()) as usize
-		};
-		self.bins[bucket] += 1;
-		self.count += 1;
-		self.max_ns = self.max_ns.max(nanos);
-	}
-
-	pub fn count(&self) -> u64 {
-		self.count
-	}
-
-	pub fn percentile_ms(&self, percentile: u64) -> f64 {
-		if self.count == 0 {
-			return 0.0;
-		}
-		let rank = (u128::from(self.count) * u128::from(percentile.clamp(1, 100))).div_ceil(100);
-		let mut cumulative = 0_u128;
-		for (index, count) in self.bins.iter().enumerate() {
-			cumulative += u128::from(*count);
-			if cumulative >= rank {
-				let upper = if index == 64 { u64::MAX } else { 1_u64 << index };
-				return upper.min(self.max_ns) as f64 / 1_000_000.0;
-			}
-		}
-		self.max_ns as f64 / 1_000_000.0
-	}
-}
-
-impl Default for FlushHistogram {
-	fn default() -> Self {
-		Self {
-			bins: [0; 65],
-			count: 0,
-			max_ns: 0,
-		}
-	}
-}
-
-// region:    --- Support
-
-fn publish_json<T: Serialize>(directory: &SPath, file_name: &str, value: &T) -> Result<()> {
-	let temporary_path = directory.join(format!(".{file_name}.tmp"));
-	let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary_path)?;
-	serde_json::to_writer_pretty(&mut file, value)?;
-	file.write_all(b"\n")?;
-	file.sync_all()?;
-	drop(file);
-	fs::hard_link(&temporary_path, directory.join(file_name))?;
-	if let Err(error) = fs::remove_file(&temporary_path) {
-		eprintln!("simrec: {file_name} published, but temporary cleanup failed: {error}");
-	}
-	Ok(())
-}
-
-// endregion: --- Support
-
 // region:    --- Tests
 
 #[cfg(test)]
@@ -212,6 +83,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
+	use crate::metrics::FlushHistogram;
 
 	#[test]
 	fn test_metrics_from_run_diagnostic_values() -> Result<()> {
@@ -240,6 +112,10 @@ mod tests {
 			16,
 			Duration::from_secs(2),
 			produced,
+			DispatchStats {
+				ticks_total: 400,
+				main_stall_count: 3,
+			},
 			recorded,
 		);
 		let serialized = serde_json::to_value(&metrics)?;
@@ -255,6 +131,7 @@ mod tests {
 		assert_eq!(serialized["wall_time_s"], 2.0);
 		assert_eq!(serialized["ticks_per_s"], 200.0);
 		assert_eq!(serialized["stall_count"], 7);
+		assert_eq!(serialized["dispatch_stall_count"], 3);
 		assert_eq!(serialized["max_pending_len"], 12);
 		assert_eq!(serialized["flush_count"], 2);
 		assert_eq!(serialized["flush_ms_p50"], 1.048576);
@@ -335,37 +212,6 @@ mod tests {
 		Ok(())
 	}
 
-	#[test]
-	fn test_metrics_flush_histogram_percentiles() -> Result<()> {
-		// -- Setup & Fixtures
-		let mut histogram = FlushHistogram::default();
-
-		// -- Exec
-		for nanos in [1_u64, 2, 3, 4, 5] {
-			histogram.record(Duration::from_nanos(nanos));
-		}
-
-		// -- Check
-		assert_eq!(histogram.count(), 5);
-		assert_eq!(histogram.percentile_ms(50), 4.0 / 1_000_000.0);
-		assert_eq!(histogram.percentile_ms(99), 5.0 / 1_000_000.0);
-		assert_eq!(histogram.max_ns, 5);
-		Ok(())
-	}
-
-	#[test]
-	fn test_metrics_flush_histogram_empty_and_saturated() -> Result<()> {
-		// -- Setup & Fixtures
-		let mut histogram = FlushHistogram::default();
-
-		// -- Exec & Check
-		assert_eq!(histogram.percentile_ms(99), 0.0);
-		histogram.record(Duration::from_secs(u64::MAX));
-		assert_eq!(histogram.max_ns, u64::MAX);
-		assert_eq!(histogram.percentile_ms(99), u64::MAX as f64 / 1_000_000.0);
-		Ok(())
-	}
-
 	// -- Test Support
 
 	fn fixture_metrics() -> Metrics {
@@ -376,6 +222,7 @@ mod tests {
 			1,
 			Duration::from_secs(1),
 			ProducerStats::default(),
+		DispatchStats::default(),
 			ConsumerStats::default(),
 		)
 	}

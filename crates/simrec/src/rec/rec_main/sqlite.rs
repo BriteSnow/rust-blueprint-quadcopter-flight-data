@@ -1,116 +1,42 @@
-use crate::mock_in::CHANNELS;
-use crate::recorder::{Recorder, Tick};
-use crate::sqlite_common::{create_new_database_file, database_bytes, open_wal_database};
-use crate::{Error, Result};
-use rusqlite::{params, Connection};
+use super::recorder::Recorder;
+use crate::Result;
+use lib_common::Tick;
+use lib_db::{create_main, db_file_bytes, DbRw, SamplesWriter};
 use simple_fs::SPath;
 
 const DATABASE_FILENAME: &str = "capture-main.sqlite";
 const INSERT_SQL: &str = "INSERT INTO samples (ts_epoch_micro, rotor_fl_rpm, rotor_fr_rpm, rotor_rl_rpm, rotor_rr_rpm, accel_x_mps2, accel_y_mps2, accel_z_mps2, gyro_x_rads, gyro_y_rads, gyro_z_rads) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
-
 pub struct SqliteRecorder {
-	connection: Option<Connection>,
+	writer: SamplesWriter,
 	database_path: SPath,
 }
 
 impl SqliteRecorder {
 	pub fn new(directory: &SPath, with_index: bool) -> Result<Self> {
 		let database_path = directory.join(DATABASE_FILENAME);
-		create_new_database_file(&database_path)?;
-		let connection = open_wal_database(&database_path)?;
-		let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-		if !journal_mode.eq_ignore_ascii_case("wal") {
-			return Err(Error::custom(format!(
-				"SQLite journal mode is {journal_mode}, expected WAL"
-			)));
-		}
-
-		connection.pragma_update(None, "synchronous", "NORMAL")?;
-		let synchronous: i64 = connection.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
-		if synchronous != 1 {
-			return Err(Error::custom(format!(
-				"SQLite synchronous mode is {synchronous}, expected NORMAL"
-			)));
-		}
-
-		connection.execute_batch(
-			"CREATE TABLE samples (
-                ts_epoch_micro INTEGER PRIMARY KEY,
-                rotor_fl_rpm REAL,
-                rotor_fr_rpm REAL,
-                rotor_rl_rpm REAL,
-                rotor_rr_rpm REAL,
-                accel_x_mps2 REAL,
-                accel_y_mps2 REAL,
-                accel_z_mps2 REAL,
-                gyro_x_rads REAL,
-                gyro_y_rads REAL,
-                gyro_z_rads REAL
-            );",
-		)?;
-
-		if with_index {
-			for column in CHANNELS {
-				connection.execute_batch(&format!("CREATE INDEX idx_samples_{column} ON samples ({column});"))?;
-			}
-		}
+		let db = DbRw::create_new(&database_path)?;
+		create_main(&db, with_index)?;
 
 		Ok(Self {
-			connection: Some(connection),
+			writer: SamplesWriter::new(db),
 			database_path,
 		})
-	}
-
-	fn recording_bytes(&self) -> Result<u64> {
-		database_bytes(&self.database_path)
 	}
 }
 
 impl Recorder for SqliteRecorder {
 	fn write_batch(&mut self, ticks: &[Tick]) -> Result<()> {
-		if ticks.is_empty() {
-			return Ok(());
-		}
-
-		let connection = self
-			.connection
-			.as_mut()
-			.ok_or_else(|| Error::custom("SQLite recorder is already finalized"))?;
-		let transaction = connection.transaction()?;
-		{
-			let mut statement = transaction.prepare_cached(INSERT_SQL)?;
-			for tick in ticks {
-				statement.execute(params![
-					tick.epoch_micro,
-					f64::from(tick.v[0]),
-					f64::from(tick.v[1]),
-					f64::from(tick.v[2]),
-					f64::from(tick.v[3]),
-					f64::from(tick.v[4]),
-					f64::from(tick.v[5]),
-					f64::from(tick.v[6]),
-					f64::from(tick.v[7]),
-					f64::from(tick.v[8]),
-					f64::from(tick.v[9]),
-				])?;
-			}
-		}
-		transaction.commit()?;
-
+		self.writer.write_batch(ticks)?;
 		Ok(())
 	}
 
-	fn finish(mut self: Box<Self>) -> Result<u64> {
-		let connection = self
-			.connection
-			.take()
-			.ok_or_else(|| Error::custom("SQLite recorder is already finalized"))?;
-		connection.close().map_err(|(_, error)| Error::Sqlite(error))?;
+	fn finish(self: Box<Self>) -> Result<u64> {
+		let Self { writer, database_path } = *self;
+		writer.close()?;
 
-		self.recording_bytes()
+		Ok(db_file_bytes(&database_path)?)
 	}
 }
-
 // region:    --- Tests
 
 #[cfg(test)]
@@ -118,7 +44,8 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
-	use crate::recorder::CHANNEL_COUNT;
+	use lib_common::channels::{CHANNEL_COUNT, CHANNELS};
+	use rusqlite::Connection;
 	use std::fs;
 
 	#[test]
@@ -136,20 +63,17 @@ mod tests {
 			},
 		];
 		let mut recorder = SqliteRecorder::new(&directory, false)?;
-		let connection = recorder.connection.as_ref().ok_or("SQLite connection should be open")?;
-		let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-		let synchronous: i64 = connection.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
 
 		// -- Exec
 		recorder.write_batch(&ticks)?;
 		let output_bytes = Box::new(recorder).finish()?;
 
 		// -- Check
-		assert!(journal_mode.eq_ignore_ascii_case("wal"));
-		assert_eq!(synchronous, 1);
 		assert!(output_bytes > 0);
 
 		let connection = Connection::open(directory.join(DATABASE_FILENAME))?;
+		let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+		assert!(journal_mode.eq_ignore_ascii_case("wal"));
 		let count: i64 = connection.query_row("SELECT COUNT(*) FROM samples", [], |row| row.get(0))?;
 		assert_eq!(count, ticks.len() as i64);
 

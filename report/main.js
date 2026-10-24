@@ -12,7 +12,10 @@ const MAIN_OSTEL_FILE = "capture-main-ostel.jsonl";
 const LEGACY_OSTEL_FILE = "cpu-samples.jsonl";
 const SUM_METRICS_FILE = "capture-sum-metrics.json";
 const SUM_OSTEL_FILE = "capture-sum-ostel.jsonl";
-const SUM_THREAD_NAME = "simrec-sum";
+const SIM_THREAD = "simrec-sim";
+const DISPATCH_THREAD = "simrec-dispatch";
+const REC_THREADS = ["simrec-rec-main", "simrec-rec"];
+const SUM_THREADS = ["simrec-rec-sum", "simrec-sum"];
 const TICK_SECONDS = 0.005;
 const DATASET_NAME = /^[dm]\d+$/;
 const RUN_DIR_NAME = /^([dm]\d+)-(real|max)$/;
@@ -23,8 +26,18 @@ const HORIZONS = [
   { label: "1 day", days: 1 },
   { label: "10 days", days: 10 },
 ];
-const SCALED_FIELDS = ["ticks_total", "wall_time_s", "output_bytes", "flush_count", "stall_count"];
-const SCALED_SUM_FIELDS = ["rows_emitted", "rows_written", "rows_dropped", "ticks_summarized", "output_bytes"];
+const SCALED_FIELDS = ["ticks_total", "wall_time_s", "output_bytes", "flush_count", "stall_count", "dispatch_stall_count"];
+const SCALED_SUM_FIELDS = [
+  "rows_emitted",
+  "rows_written",
+  "rows_dropped",
+  "ticks_summarized",
+  "ticks_received",
+  "ticks_dropped",
+  "batches_dropped",
+  "partial_rows",
+  "output_bytes",
+];
 
 const KNOWN_BACKENDS = ["raw", "sqlite-pk-index", "sqlite-all-index", "noop"];
 const FALLBACK_DATASETS = ["m001", "m005", "m010", "m030", "m060", "d001", "d010"];
@@ -44,6 +57,7 @@ const CHARTS = [
   { title: "Bytes per tick", unit: "lower is better", get: bytesPerTick, format: formatDecimal, skipNoop: true },
   { title: "Flush latency p99", unit: "ms, lower is better", get: (m) => m.flush_ms_p99, format: formatMs },
   { title: "Sim thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.sim?.avg, format: formatPercent },
+  { title: "Dispatch thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.dispatch?.avg, format: formatPercent },
   { title: "Rec thread CPU", unit: "% of one core, lower is better", get: (m) => m.cpu?.rec?.avg, format: formatPercent },
   { title: "Sum thread CPU", unit: "% of one core, lower is better", get: (m) => m.sumCpu?.avg, format: formatPercent },
 ];
@@ -59,6 +73,7 @@ const TABLE_ROWS = [
   { label: "Output size", get: (m) => m.output_bytes, format: formatBytes, better: "low" },
   { label: "Bytes per tick", get: bytesPerTick, format: formatDecimal, better: "low" },
   { label: "Stalls", get: (m) => m.stall_count, format: formatInt, better: "low" },
+  { label: "Dispatch stalls", get: (m) => m.dispatch_stall_count, format: formatInt, better: "low" },
   { label: "Max pending ticks", get: (m) => m.max_pending_len, format: formatInt, better: "low" },
   { label: "Flush count", get: (m) => m.flush_count, format: formatInt },
   { label: "Flush p50", get: (m) => m.flush_ms_p50, format: formatMs, better: "low" },
@@ -66,12 +81,16 @@ const TABLE_ROWS = [
   { label: "Flush max", get: (m) => m.flush_ms_max, format: formatMs, better: "low" },
   { label: "Finish", get: (m) => m.finish_ms, format: formatMs, better: "low" },
   { label: "Sim thread CPU", get: (m) => m.cpu?.sim?.avg ?? null, format: formatPercent, better: "low" },
+  { label: "Dispatch thread CPU", get: (m) => m.cpu?.dispatch?.avg ?? null, format: formatPercent, better: "low" },
   { label: "Rec thread CPU", get: (m) => m.cpu?.rec?.avg ?? null, format: formatPercent, better: "low" },
   { label: "Process CPU", get: (m) => m.cpu?.process?.avg ?? null, format: formatPercent, better: "low" },
   { label: "Process RSS peak", get: (m) => m.cpu?.rssPeak ?? null, format: formatBytes, better: "low" },
   { label: "Sum thread CPU", get: (m) => m.sumCpu?.avg ?? null, format: formatPercent, better: "low" },
   { label: "Sum rows written", get: (m) => m.sum?.rows_written, format: formatInt },
   { label: "Sum rows dropped", get: (m) => m.sum?.rows_dropped, format: formatInt, better: "low" },
+  { label: "Sum ticks dropped", get: (m) => m.sum?.ticks_dropped, format: formatInt, better: "low" },
+  { label: "Sum batches dropped", get: (m) => m.sum?.batches_dropped, format: formatInt, better: "low" },
+  { label: "Sum partial rows", get: (m) => m.sum?.partial_rows, format: formatInt, better: "low" },
   { label: "Sum flush p99", get: (m) => m.sum?.flush_ms_p99, format: formatMs, better: "low" },
   { label: "Sum output size", get: (m) => m.sum?.output_bytes, format: formatBytes, better: "low" },
 ];
@@ -291,13 +310,18 @@ function summarizeCpu(text) {
   if (text == null) {
     return null;
   }
-  const threads = { "simrec-sim": [], "simrec-rec": [] };
+  const threads = new Map([
+    [SIM_THREAD, []],
+    [DISPATCH_THREAD, []],
+    ...REC_THREADS.map((name) => [name, []]),
+  ]);
   const processPct = [];
   let rssPeak = null;
   let error = null;
   for (const line of parseJsonLines(text)) {
-    if (line.kind === "thread" && Object.hasOwn(threads, line.thread)) {
-      threads[line.thread].push(line.cpu_pct);
+    const values = line.kind === "thread" ? threads.get(line.thread) : null;
+    if (values) {
+      values.push(line.cpu_pct);
     } else if (line.kind === "process") {
       processPct.push(line.cpu_pct);
       if (typeof line.rss_bytes === "number") {
@@ -308,8 +332,9 @@ function summarizeCpu(text) {
     }
   }
   return {
-    sim: pctStats(threads["simrec-sim"]),
-    rec: pctStats(threads["simrec-rec"]),
+    sim: pctStats(threads.get(SIM_THREAD) ?? []),
+    dispatch: pctStats(threads.get(DISPATCH_THREAD) ?? []),
+    rec: statsForThreads(threads, REC_THREADS),
     process: pctStats(processPct),
     rssPeak,
     error,
@@ -327,15 +352,30 @@ function pctStats(values) {
   return { avg: total / numbers.length, peak };
 }
 
-/// Summarizes the `simrec-sum` thread lines of `capture-sum-ostel.jsonl`, or returns null when the file is missing.
+/// Returns the stats of the first thread name that has samples, so a capture never mixes the new and legacy thread names.
+function statsForThreads(threads, names) {
+  for (const name of names) {
+    const values = threads.get(name) ?? [];
+    if (values.length) {
+      return pctStats(values);
+    }
+  }
+  return null;
+}
+
+/// Summarizes the `simrec-rec-sum` thread lines of `capture-sum-ostel.jsonl`, or returns null when the file is missing.
 function summarizeSumCpu(text) {
   if (text == null) {
     return null;
   }
-  const values = parseJsonLines(text)
-    .filter((line) => line.kind === "thread" && line.thread === SUM_THREAD_NAME)
-    .map((line) => line.cpu_pct);
-  return pctStats(values);
+  const threads = new Map(SUM_THREADS.map((name) => [name, []]));
+  for (const line of parseJsonLines(text)) {
+    const values = line.kind === "thread" ? threads.get(line.thread) : null;
+    if (values) {
+      values.push(line.cpu_pct);
+    }
+  }
+  return statsForThreads(threads, SUM_THREADS);
 }
 
 // endregion: --- Loading
@@ -627,6 +667,7 @@ function renderRunCard(run, dataset) {
     ["Flush p50 / p99", `${formatMs(metrics.flush_ms_p50)} / ${formatMs(metrics.flush_ms_p99)}`],
     ["Flush max", formatMs(metrics.flush_ms_max)],
     ["Stalls", formatInt(metrics.stall_count)],
+    ["Dispatch stalls", formatOptional(metrics.dispatch_stall_count, formatInt)],
     ["Finish", formatMs(metrics.finish_ms)],
     ["Config", `flush ${metrics.flush_ms} ms, ring ${formatInt(metrics.ring_cap)}`],
     ...cpuRows(run.cpu),
@@ -660,6 +701,7 @@ function renderStatList(stats) {
 function cpuRows(cpu) {
   return [
     ["Sim thread CPU", formatCpuStat(cpu?.sim)],
+    ["Dispatch thread CPU", formatCpuStat(cpu?.dispatch)],
     ["Rec thread CPU", formatCpuStat(cpu?.rec)],
     ["Process CPU", formatCpuStat(cpu?.process)],
     ["Process RSS peak", formatOptional(cpu?.rssPeak, formatBytes)],
@@ -671,6 +713,9 @@ function sumRows(run) {
     ["Sum thread CPU", formatCpuStat(run.sumCpu)],
     ["Sum rows written", formatOptional(run.sum?.rows_written, formatInt)],
     ["Sum rows dropped", formatOptional(run.sum?.rows_dropped, formatInt)],
+    ["Sum ticks dropped", formatOptional(run.sum?.ticks_dropped, formatInt)],
+    ["Sum batches dropped", formatOptional(run.sum?.batches_dropped, formatInt)],
+    ["Sum partial rows", formatOptional(run.sum?.partial_rows, formatInt)],
     ["Sum flush p99", formatOptional(run.sum?.flush_ms_p99, formatMs)],
     ["Sum output size", formatOptional(run.sum?.output_bytes, formatBytes)],
   ];
@@ -791,7 +836,7 @@ function renderHorizonToggle(dataset) {
     return null;
   }
   const note = state.horizon.days
-    ? `Output size, ticks, wall time, flush count, stalls, and summary rows and output are scaled by ${formatInt(horizonFactor(dataset, state.horizon))}x for ${dataset.name}. Rates and per-tick values are unchanged.`
+    ? `Output size, ticks, wall time, flush count, stalls, dispatch stalls, summary rows, ticks and batches dropped before the summary, partial rows, and summary output are scaled by ${formatInt(horizonFactor(dataset, state.horizon))}x for ${dataset.name}. Rates and per-tick values are unchanged.`
     : null;
   return h(
     "section",

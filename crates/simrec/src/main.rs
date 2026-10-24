@@ -1,27 +1,18 @@
 // region:    --- Modules
 
 mod app;
-mod cmd;
+mod cli;
+mod dispatcher;
 mod error;
 mod metrics;
-#[path = "mock-in.rs"]
-mod mock_in;
+mod ostel;
 mod rec;
-#[path = "rec-raw.rs"]
-mod rec_raw;
-#[path = "rec-sqlite.rs"]
-mod rec_sqlite;
-mod recorder;
-mod sampler;
+mod run;
 mod sim;
-#[path = "sqlite-common.rs"]
-mod sqlite_common;
-mod sum;
-#[path = "sum-acc.rs"]
-mod sum_acc;
-#[path = "sum-sqlite.rs"]
-mod sum_sqlite;
 mod support;
+
+#[cfg(test)]
+mod _test_support;
 
 pub use error::{Error, Result};
 

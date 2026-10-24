@@ -16,8 +16,9 @@ flowchart LR
   end
   subgraph simrecproc["simrec process"]
     sim["simrec-sim thread<br/>paced producer"]
-    rec["simrec-rec thread<br/>writes main recording, accumulates seconds"]
-    sum["simrec-sum thread<br/>writes per-second summary"]
+    disp["simrec-dispatch thread<br/>fans out each batch"]
+    rec["simrec-rec-main thread<br/>writes main recording"]
+    sum["simrec-rec-sum thread<br/>writes summary"]
     smp["simrec-sampler thread<br/>CPU samples"]
   end
   mock[("sandbox/mock-data/NAME<br/>ticks.bin, story.jsonl, manifest.json")]
@@ -25,9 +26,10 @@ flowchart LR
   sumdb[("capture-sum.sqlite, capture-sum-metrics.json, capture-sum-ostel.jsonl")]
   gen -->|"writes"| mock
   mock -->|"reads"| sim
-  sim -->|"ticks over bounded ring"| rec
+  sim -->|"ticks over bounded ring"| disp
+  disp -->|"blocks when the main ring is full"| rec
+  disp -->|"drops the batch when the sum ring is full"| sum
   rec -->|"writes recording"| captured
-  rec -->|"SumRow batches over bounded sum ring"| sum
   sum -->|"writes summary"| sumdb
   smp -->|"writes main ostel"| captured
   smp -->|"writes sum ostel"| sumdb
@@ -37,7 +39,7 @@ flowchart LR
 
 - `simrec` runs once per replay and writes exactly one backend folder, so one dataset can feed many runs.
 
-- The four `simrec` threads share one process; the sampler never touches the ring, the recorder, or the cancellation flag, and the summary thread only reads its own sum ring.
+- The five `simrec` threads share one process; the sampler never touches the rings, the recorders, or the cancellation flag, and the summary thread only reads its own sum ring.
 
 - `report/` is a static browser page, not a running crate, so it appears in the tech stack diagram instead.
 
@@ -72,28 +74,29 @@ flowchart LR
 flowchart LR
   input["MockInput<br/>validated manifest and ticks.bin"] --> producer["simrec-sim<br/>producer, paced by deadlines"]
   producer -->|"Vec of at most 1024 ticks"| ring[["bounded SPSC ring<br/>ring-cap messages"]]
-  ring --> consumer["simrec-rec<br/>consumer, batched writes"]
+  ring --> dispatcher["simrec-dispatch<br/>fans out each batch"]
+  dispatcher -->|"Arc of the same batch, blocking"| consumer["simrec-rec-main<br/>consumer, batched writes"]
+  dispatcher -->|"Arc of the same batch, drop when full"| summary["simrec-rec-sum<br/>writes capture-sum.sqlite"]
   consumer -->|"write_batch"| recorder{"Recorder"}
   recorder --> noop["noop<br/>discards ticks"]
   recorder --> raw["raw<br/>one segment per hour"]
   recorder --> sqlite["sqlite<br/>capture-main.sqlite in WAL mode"]
-  consumer -->|"SumRow batches over sum ring"| summary["simrec-sum<br/>writes capture-sum.sqlite"]
-  noop --> finish["join both workers<br/>check tick conservation"]
+  noop --> finish["join every worker<br/>check tick conservation"]
   raw --> finish
   sqlite --> finish
   summary --> finish
   finish --> metrics["capture-main-metrics.json<br/>published last"]
 ```
 
-- The ring is a named, bounded, single-owner SPSC queue; a full ring returns the owned message instead of dropping it.
+- The rings are named, bounded, single-owner SPSC queues; a full ring returns the owned message instead of dropping it.
 
 - Realtime pacing uses monotonic deadlines, so backpressure turns into lateness, not timestamp drift.
 
-- The producer keeps at most 1024 pending ticks and counts stalls; the consumer flushes by age and, when enabled, by size.
+- The producer keeps at most 1024 pending ticks and counts stalls. The dispatcher blocks on the main ring so backpressure reaches sim. On the sum ring it drops the whole batch and counts it. The main consumer flushes by age and, when enabled, by size.
 
-- The sampler never touches the ring, the recorder, or the cancellation flag, and its failure never fails the capture.
+- The sampler never touches the rings, the recorders, or the cancellation flag, and its failure never fails the capture.
 
-- Both workers are joined and tick conservation is checked before `capture-main-metrics.json` is published. The summary thread is joined before `capture-sum-metrics.json` is published.
+- Every worker is joined and tick conservation is checked before `capture-main-metrics.json` is published. The summary thread is joined before `capture-sum-metrics.json` is published.
 
 ### Artifacts on Disk
 
@@ -125,8 +128,9 @@ The diagram shows how the crates, the browser viewer, and the files on disk fit 
 flowchart TB
   subgraph workspace["Rust workspace, edition 2021"]
     libc["lib-common<br/>crossfire, derive_more, libproc on macOS"]
+    libdb["lib-db<br/>rusqlite bundled, simple-fs"]
     mocker["mocker<br/>clap, serde, serde_json, rand, rand_chacha, simple-fs"]
-    simrec["simrec<br/>clap, tokio, rusqlite bundled, serde, serde_json, simple-fs"]
+    simrec["simrec<br/>clap, serde, serde_json, simple-fs"]
   end
   subgraph viewer["Static browser viewer"]
     report["report/<br/>HTML, CSS, ES modules, Canvas 2D"]
@@ -137,6 +141,8 @@ flowchart TB
   end
   mocker -->|"time::now"| libc
   simrec -->|"event_base and os"| libc
+  libdb -->|"CHANNELS"| libc
+  simrec -->|"schemas and writers"| libdb
   mocker -->|"writes"| mockfiles
   simrec -->|"reads"| mockfiles
   simrec -->|"writes"| capfiles
@@ -146,16 +152,17 @@ flowchart TB
 
 | Component | Role | Key dependencies |
 | --------- | ---- | ---------------- |
-| `lib-common` | Shared SPSC facade (`event_base`), wall-clock time, macOS CPU sampling | `crossfire`, `derive_more`, `libproc` (macOS target only) |
+| `lib-common` | Shared SPSC facade (`event_base`), wall-clock time, macOS CPU sampling, channel names | `crossfire`, `derive_more`, `libproc` (macOS target only) |
+| `lib-db` | SQLite handles, schemas, writers, and the summary reader | `lib-common`, `rusqlite` (bundled), `simple-fs`, `derive_more` |
 | `mocker` | Deterministic mock dataset generator | `lib-common`, `serde`, `serde_json`, `clap`, `simple-fs`, `rand`, `rand_chacha` |
-| `simrec` | Validated replay, capture pipeline, recorders, metrics | `lib-common`, `tokio`, `rusqlite` (bundled), `serde`, `serde_json`, `clap`, `simple-fs`, `derive_more` |
+| `simrec` | Validated replay, dispatcher, main recorder, summary recorder, metrics | `lib-common`, `lib-db`, `serde`, `serde_json`, `clap`, `simple-fs`, `derive_more` |
 | `report/` | Static browser viewer, no build step | Plain HTML, CSS, and ES modules, Canvas 2D charts |
 
 - Language and layout:
 
   - Rust, edition 2021, workspace resolver 3.
 
-  - Three crates in one workspace: `lib-common`, `mocker`, and `simrec`.
+  - Four crates in one workspace: `lib-common`, `lib-db`, `mocker`, and `simrec`.
 
   - `report/` is plain static files served beside `sandbox/`, with no bundler and no framework.
 
@@ -218,9 +225,10 @@ Cargo.toml              workspace, shared dependencies, lints, profiles
 README.md               usage, formats, limitations, comparison procedure
 .gitignore              sandbox/
 crates/
-  lib-common/           shared named bounded SPSC facade (event_base), os sampling, time
+  lib-common/           shared named bounded SPSC facade (event_base), os sampling, time, channels
+  lib-db/               SQLite handles, schemas, writers, and the summary reader
   mocker/               deterministic mock dataset generator
-  simrec/               validated replay, pipeline, recorders, metrics
+  simrec/               validated replay, dispatcher, pipeline, recorders, metrics
 sandbox/                generated mock datasets and captures (not versioned)
 dev/                    project rules and specs
 .workbench/             planning and chat workspace
@@ -249,6 +257,26 @@ dev/                    project rules and specs
 - `ProcessStats` holds `user_ns`, `system_ns`, and `rss_bytes`.
 - CPU times are nanoseconds as reported by `libproc` on the target machine, with no timebase conversion.
 - Other targets return `Error::Unsupported`.
+
+## Crate: lib-db
+
+- Owns every SQLite access, so simrec and the future console do not touch `rusqlite` directly, except in tests.
+- Two handle types: `DbRw` for one-thread reads and writes, `DbRo` for one-thread read-only access. Each is `!Sync` and owned by one thread.
+- `DbRw::create_new(path)`:
+  - Creates the empty file with `create_new(true)`, so an existing database is never overwritten.
+  - Opens with `SQLITE_OPEN_READ_WRITE | SQLITE_OPEN_NO_MUTEX`.
+  - Sets `journal_mode=WAL` and `synchronous=NORMAL` and reads both back. This is the only place the pragmas are checked.
+- `DbRo::open(path)`:
+  - Opens with `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX`.
+  - Sets `query_only=ON` and `busy_timeout` of 1000 ms, so read-only code cannot write and WAL readers do not block the writer.
+- `schema::main`:
+  - `create_main(db, all_index)` creates the `samples` table with `ts_epoch_micro INTEGER PRIMARY KEY` and the ten `REAL` channels in tick order, plus the ten `idx_samples_<channel>` indexes when `all_index` is set.
+  - `SamplesWriter::write_batch(&mut self, ticks: &[Tick])` binds 11 values per tick through a cached prepared statement, one transaction per nonempty batch. A failed batch rolls back as a whole.
+- `schema::sum`:
+  - `create_sum(db, bucket_us, start_epoch_us)` creates `summary` and `meta` and writes the metadata rows.
+  - `SumWriter::write_rows(&mut self, rows: &[SumRow])` binds 32 values per row through a cached prepared statement, one transaction per nonempty slice.
+  - `SumReader` wraps a `DbRo` and exposes `bucket_us()`, `rows_after(ts, limit)`, and `latest(n)`, for the console and for tests.
+- `files::db_file_bytes(path)` returns the database plus its `-wal` and `-shm` files, used for `output_bytes` in both metrics files.
 
 ## Crate: mocker
 
@@ -404,15 +432,54 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 | `--speed`     | `real`      | `real` (deadline pacing) or `max`           |
 | `--ring-cap`  | `4096`      | ring capacity in messages, 1 to 65536       |
 | `--sample-ms` | `1000`      | CPU sampling interval in ms, positive       |
-| `--no-sum` | (off) | disable the per-second summary, no `capture-sum-*` files |
+| `--no-sum` | (off) | disable the summary, no `capture-sum-*` files |
 | `--sum-flush-s` | `1` | summary commit interval in seconds, positive |
-| `--sum-ring-cap` | `64` | summary ring capacity in messages, 1 to 4096 |
+| `--sum-ring-cap` | `256` | `dispatch-rec-sum` ring capacity in tick-batch messages, 1 to 65536 |
 
 - Exactly one backend flag is required.
 - `--duration` accepts `d<N>`, `h<N>`, or `m<N>` with N positive.
 - Input resolution: up to one day uses `mock-data/d001`, falling back to `mock-data/d010`. Spans above one day up to ten days use `mock-data/d010`. Longer spans are rejected. The replay is truncated to the requested span from the start of the dataset: the tick count is the duration in seconds times 200. For example, `--duration m5` replays the first 60,000 ticks of `d001`, and `--duration d1` replays all 17,280,000 ticks. The run folder uses the requested duration name, so `--duration m5` writes to `captured/m005-<speed>/`, and `--duration d1` writes to `captured/d001-<speed>/`.
 - Output directories must be new or empty. Nothing is removed automatically.
 - Run folder is `<name>-<speed>`, with `real` for `--speed real` and `max` for `--speed max`. Each speed has its own folder, so real and max runs of one dataset and backend can run in parallel.
+
+### Module layout
+
+- `main.rs` wires modules and delegates to `app.rs`.
+- `app.rs` turns the CLI into a capture config, resolves the dataset, prepares the output, checks conservation, and publishes metrics.
+- `cli.rs` holds the clap parser and the duration, dataset, and ring-capacity helpers.
+- `sim/` holds the validated input (`input.rs`) and the paced producer (`producer.rs`).
+- `dispatcher/` holds the fan-out worker (`dispatch.rs`).
+- `rec/rec_main/` holds the main recorder: the batching consumer (`consumer.rs`), the `Recorder` trait (`recorder.rs`), the raw recorder (`raw.rs`), and the SQLite recorder (`sqlite.rs`).
+- `rec/rec_sum/` holds the summary: the bucket accumulator (`accum.rs`) and the summary consumer (`consumer.rs`).
+- `metrics/` holds the histogram (`flush-histogram.rs`), the publication helper (`publish.rs`), and the two metrics documents (`main-metrics.rs`, `sum-metrics.rs`).
+- `ostel/` holds the sampler (`sampler.rs`).
+- `run.rs` owns the rings, the named scoped threads, the shutdown order, cancellation, and error merging. It is the only module that knows every thread.
+- `sim` does not import from `dispatcher` or `rec`. `rec_main` and `rec_sum` do not import from each other. `ostel` does not import from `rec_sum`.
+
+### Threads and rings
+
+| Ring | Message | Capacity flag | Default |
+| ---- | ------- | ------------- | ------- |
+| `sim-dispatch` | `Vec<Tick>`, at most 1024 ticks | `--ring-cap` | 4096 |
+| `dispatch-rec-main` | `Arc<Vec<Tick>>` | `--ring-cap` | 4096 |
+| `dispatch-rec-sum` | `Arc<Vec<Tick>>` | `--sum-ring-cap` | 256 |
+
+- Thread names: `simrec-sim`, `simrec-dispatch`, `simrec-rec-main`, `simrec-rec-sum`, `simrec-sampler`.
+- Ring names are passed to `event_base`, so errors name the ring.
+- With `--no-sum`, the `dispatch-rec-sum` ring and the `simrec-rec-sum` thread do not exist.
+
+#### Dispatcher
+
+- Receives a `Vec<Tick>` from `sim-dispatch`, wraps it once in `Arc<Vec<Tick>>` (no copy), and sends:
+  - blocking to `dispatch-rec-main`, retrying with a short backoff while the ring is full, without reading `sim-dispatch`, so backpressure reaches sim;
+  - best effort to `dispatch-rec-sum`, once. A full ring drops the whole batch for sum and counts it. A disconnected receiver stops sum sends and counts every later batch.
+- Main is always sent before sum, so a sum problem cannot delay main.
+- `dispatch_stall_count` counts one per batch that found `dispatch-rec-main` full at least once. This differs from sim's `stall_count`, which counts every full attempt on `sim-dispatch`.
+- End of stream follows the sim/rec pattern:
+  - A plain disconnect is not success, because sim also drops its sender on failure.
+  - The dispatcher finishes only when `sim_done` is set and a final recheck of `sim-dispatch` is empty. Otherwise it keeps waiting on `cancelled`.
+  - On success it sets `dispatch_done` and drops both senders, so both recorders finish.
+- It holds a cancellation guard, like `simrec-sim` and `simrec-rec-main`. A main-path failure in any of the three cancels the others.
 
 ### Startup Validation
 
@@ -432,9 +499,9 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 - Ticks travel in `Vec<Tick>` messages of at most 1024 ticks.
 - A full ring keeps pending ticks in the producer. Stalls are counted. Input pauses when pending reaches 1024 ticks.
 - Consumer thread appends ticks to a batch and flushes when the interval elapses. Without `--flush-ms`, the interval is 100 ms and a batch is also flushed at 8192 ticks. With `--flush-ms`, there is no tick cap.
-- Final draining happens only after producer success is published and the ring is rechecked.
-- Both workers are joined before completion is reported.
-- Threads are named `simrec-sim` (producer), `simrec-rec` (consumer), `simrec-sum` (summary writer, unless `--no-sum`), and `simrec-sampler` (CPU sampler, when enabled).
+- Final draining happens only after the dispatcher publishes success on `dispatch_done` and the ring is rechecked.
+- Every worker is joined before completion is reported.
+- Threads are named `simrec-sim` (producer), `simrec-dispatch` (fan-out), `simrec-rec-main` (main recorder), `simrec-rec-sum` (summary writer, unless `--no-sum`), and `simrec-sampler` (CPU sampler, when enabled).
 - Tick conservation is required: produced and recorded counts must equal the replayed tick count, which is the requested span in ticks.
 
 ### Recorder Trait
@@ -450,9 +517,9 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 
 ### Failure Handling
 
-- Each worker holds a cancellation guard that signals the peer on error or panic.
+- Each worker holds a cancellation guard that signals the other main-path workers on error or panic.
 - Pacing and retry waits check cancellation.
-- When both workers fail, the originating error is preserved rather than the peer's cancellation or disconnection.
+- When several workers fail, the first non-peer error in the order sim, dispatch, rec_main is preserved.
 - Cancellation cannot interrupt a blocked file read or a recorder call that never returns.
 
 ### Metrics
@@ -461,7 +528,7 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 
 - Configuration: backend, speed, `flush_ms`, `ring_cap`, batch and pending limits.
 - Throughput: `wall_time_s`, `ticks_total`, `ticks_per_s`.
-- Pipeline: `stall_count`, `max_pending_len`.
+- Pipeline: `stall_count`, `dispatch_stall_count`, `max_pending_len`.
 - Flushes: `flush_count`, `flush_ms_p50`, `flush_ms_p99`, `flush_ms_max`, with power-of-two bucket estimates.
 - Finalization: `finish_ms`.
 - Size: `output_bytes`.
@@ -483,6 +550,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
   "wall_time_s": 12.5,
   "ticks_per_s": 1382400.0,
   "stall_count": 0,
+  "dispatch_stall_count": 0,
   "max_pending_len": 0,
   "flush_count": 2110,
   "flush_ms_p50": 0.262144,
@@ -506,6 +574,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 | `wall_time_s` | f64 | replay wall time in seconds |
 | `ticks_per_s` | f64 | `ticks_total / wall_time_s`, `0.0` when wall time is zero |
 | `stall_count` | u64 | producer ring-full events |
+| `dispatch_stall_count` | u64 | batches that found the `dispatch-rec-main` ring full at least once |
 | `max_pending_len` | usize | peak pending ticks in the producer |
 | `flush_count` | u64 | number of consumer flushes |
 | `flush_ms_p50` | f64 | flush latency estimate in ms, power-of-two bucket upper bound |
@@ -555,18 +624,23 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 ## Summary Database
 
-**Goal:** give the console a per-second view of all ten channels, without reading the 200 Hz recording.
+**Goal:** give the console a 2 Hz view of all ten channels, without reading the 200 Hz recording.
 
-- `simrec-rec` accumulates one row per epoch second (min, max, and sum as `f64` per channel, plus the tick count), keyed by `bucket_us = epoch_micro - epoch_micro.rem_euclid(1_000_000)` from the tick timestamp.
-- Closed rows go to a bounded sum ring with `try_send`. Rec never waits on it. Pending rows are capped at `MAX_PENDING_SUM_ROWS` (3,600), the oldest is dropped on overflow, and every drop is counted.
-- `simrec-sum` receives row batches, commits every `--sum-flush-s` seconds and at disconnect, and ends on sender disconnection. It holds no cancellation guard and never reads or sets the `cancelled` flag.
-- A summary error never fails the main capture. `simrec-sum` prints one warning, rec counts the remaining rows as dropped, and `capture-sum-metrics.json` is not published.
+- `simrec-rec-sum` receives tick batches from the dispatcher. It accumulates one bucket at a time (min, max, and sum as `f64` per channel, plus the tick count), keyed by `bucket_us = epoch_micro - epoch_micro.rem_euclid(SUM_BUCKET_US)` from the tick timestamp, with `SUM_BUCKET_US = 500_000`.
+- A batch that finds the `dispatch-rec-sum` ring full is dropped by the dispatcher and counted as `ticks_dropped` and `batches_dropped`. `simrec-rec-sum` never waits.
+- `simrec-rec-sum` commits every `--sum-flush-s` seconds and at disconnect, and ends on sender disconnection. It holds no cancellation guard and never reads or sets the `cancelled` flag.
+- A summary error never fails the main capture. `simrec-rec-sum` prints one warning through the app, and `capture-sum-metrics.json` is not published.
 - Creating `capture-sum.sqlite` or `capture-sum-ostel.jsonl` is a setup error and fails the run, like the main ostel file.
 
 ### capture-sum.sqlite
 
 ```sql
-CREATE TABLE sec (
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE summary (
     ts_epoch_micro INTEGER PRIMARY KEY,
     tick_count INTEGER NOT NULL,
     rotor_fl_rpm_min REAL, rotor_fl_rpm_max REAL, rotor_fl_rpm_avg REAL,
@@ -583,59 +657,84 @@ CREATE TABLE sec (
 ```
 
 - WAL journal mode and `synchronous=NORMAL`, the same as the main recording, so readers can query while the writer commits.
-- Columns follow channel order with `_min`, `_max`, and `_avg`. The insert binds 32 values.
-- `avg = sum / tick_count`. Partial first and last rows appear when the start is not on a whole second, and `tick_count` shows it.
-- Primary key only, no value indexes.
+- `meta` holds `schema_version`, `bucket_us = 500000`, `channels` (JSON array of the ten names), and `start_epoch_us` from the manifest, written once at creation.
+- `summary` columns follow channel order with `_min`, `_max`, and `_avg`. The insert binds 32 values.
+- `avg = sum / tick_count`. A full 500 ms bucket has `tick_count = 100`. Partial first and last rows appear when the start is not on a bucket boundary, and a dropped batch also lowers a bucket's `tick_count`.
+- Primary key only, no value indexes, so a day is 172,800 rows.
 - Written for every backend, including `noop`. Not written with `--no-sum`.
 
 ### capture-sum-metrics.json
 
-- Published after `simrec-sum` is joined and finalized, and after the summary conservation check passes.
+- Published after `simrec-rec-sum` is joined and finalized, and after the summary conservation check passes.
 - Pretty-printed JSON with a trailing newline, all keys always present, published with the same synced temporary file and hard-link rule as the main metrics.
-- Keys: `backend` (always `sqlite-sum`), `speed`, `sum_flush_s`, `sum_ring_cap`, `rows_emitted`, `rows_written`, `rows_dropped`, `ticks_summarized`, `max_pending_rows`, `wall_time_s`, `rows_per_s`, `flush_count`, `flush_ms_p50`, `flush_ms_p99`, `flush_ms_max`, `percentile_method`, `finish_ms`, and `output_bytes`.
+- Keys: `backend` (always `sqlite-sum`), `speed`, `bucket_us`, `sum_flush_s`, `sum_ring_cap`, `ticks_received`, `ticks_dropped`, `batches_dropped`, `rows_written`, `partial_rows`, `wall_time_s`, `rows_per_s`, `flush_count`, `flush_ms_p50`, `flush_ms_p99`, `flush_ms_max`, `percentile_method`, `finish_ms`, and `output_bytes`.
 
 ```json
 {
   "backend": "sqlite-sum",
   "speed": "max",
+  "bucket_us": 500000,
   "sum_flush_s": 1,
-  "sum_ring_cap": 64,
-  "rows_emitted": 86400,
-  "rows_written": 86400,
-  "rows_dropped": 0,
-  "ticks_summarized": 17280000,
-  "max_pending_rows": 12,
+  "sum_ring_cap": 256,
+  "ticks_received": 17280000,
+  "ticks_dropped": 0,
+  "batches_dropped": 0,
+  "rows_written": 172800,
+  "partial_rows": 0,
   "wall_time_s": 6.1,
-  "rows_per_s": 14163.9,
+  "rows_per_s": 28327.9,
   "flush_count": 7,
   "flush_ms_p50": 4.194304,
   "flush_ms_p99": 8.388608,
   "flush_ms_max": 7.9,
   "percentile_method": "nearest-rank power-of-two nanosecond bucket upper bound",
   "finish_ms": 1.2,
-  "output_bytes": 9437184
+  "output_bytes": 18874368
 }
 ```
 
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `backend` | string | always `sqlite-sum` |
+| `speed` | string | `real` or `max` |
+| `bucket_us` | i64 | `SUM_BUCKET_US`, always `500000` |
+| `sum_flush_s` | u64 | summary commit interval in seconds |
+| `sum_ring_cap` | usize | `dispatch-rec-sum` capacity in messages |
+| `ticks_received` | u64 | ticks folded into rows by the summary thread |
+| `ticks_dropped` | u64 | ticks the dispatcher could not offer to sum |
+| `batches_dropped` | u64 | tick batches the dispatcher dropped for sum |
+| `rows_written` | u64 | `summary` rows committed |
+| `partial_rows` | u64 | rows with `tick_count < 100`, at the ends or from dropped batches |
+| `wall_time_s` | f64 | summary thread run time |
+| `rows_per_s` | f64 | `rows_written / wall_time_s`, `0.0` when zero |
+| `flush_count` | u64 | number of commits |
+| `flush_ms_p50`, `flush_ms_p99`, `flush_ms_max` | f64 | commit latency estimates in ms |
+| `percentile_method` | string | fixed description of the estimate |
+| `finish_ms` | f64 | finalization time in ms |
+| `output_bytes` | u64 | database file plus sidecars |
+
 ### Summary conservation
 
-- `rows_written + rows_dropped == rows_emitted`.
-- When `rows_dropped == 0`, `ticks_summarized` must equal the main capture's `ticks_total`.
+- `ticks_received + ticks_dropped == ticks_total` of the main capture.
+- The sum of `tick_count` over every `summary` row equals `ticks_received`.
 - A failed check prints to stderr and skips `capture-sum-metrics.json`. The main capture still succeeds.
 
 ### Shutdown order
 
-1. Producer finishes. Rec drains the main ring, writes the last batch, closes the last bucket, sends pending rows, and drops the sum sender.
-2. Main recorder finishes, `simrec-sim` and `simrec-rec` are joined, and main tick conservation is checked.
-3. `simrec-sum` is joined, the summary database is finalized, and summary conservation is checked.
-4. A final sampler sample is taken, then `simrec-sampler` is stopped and joined.
-5. `capture-main-metrics.json` is published, then `capture-sum-metrics.json`.
+1. `simrec-sim` finishes, publishes `sim_done`, and drops its sender.
+2. `simrec-dispatch` drains `sim-dispatch`, sends the last batches, publishes `dispatch_done`, and drops both senders.
+3. `simrec-rec-main` drains `dispatch-rec-main`, flushes, and calls `Recorder::finish`.
+4. Sim, dispatch, and main are joined. Main tick conservation is checked.
+5. `simrec-rec-sum` is joined, the summary database is finalized, and summary conservation is checked.
+6. A final sampler sample is taken, then `simrec-sampler` is stopped and joined.
+7. `capture-main-metrics.json` is published, then `capture-sum-metrics.json`.
 
 ### Console contract
 
-- Open `capture-sum.sqlite` read-only. Wait if it does not exist yet.
-- Startup: `SELECT * FROM sec ORDER BY ts_epoch_micro DESC LIMIT 120`, reversed, fills the live view.
-- Live: every second, `SELECT * FROM sec WHERE ts_epoch_micro > ? ORDER BY ts_epoch_micro`.
+- Open `capture-sum.sqlite` read-only through `lib_db::SumReader`. Wait if it does not exist yet.
+- Startup: `SumReader::latest(120)`, reversed, fills the live view. At 2 Hz, that is a 60-second window.
+- Live: poll `SumReader::rows_after(last_ts, 120)` every 500 ms, or slower, and append the returned rows.
+- Read `bucket_us` from `meta` once, so a future bucket change is visible without hardcoding it.
 - Keep read transactions short so WAL checkpoints are not held back.
 - Maneuver labels come from `story.jsonl` in the dataset, not from the summary.
 
@@ -657,7 +756,10 @@ CREATE TABLE sec (
 - Done: mocker attitude model (roll, pitch, yaw rate), maneuver mapping, gust bursts, and Gaussian accel and gyro noise with bias drift.
 - Reported by the user as passing: `cargo build`, `cargo test`, and `cargo clippy`. Not independently rerun.
 - Done: `m001` and `d001` capture runs, each publishing `capture-metrics.json` and `cpu-samples.jsonl`.
-- Done: per-second summary on its own thread, with `capture-sum.sqlite`, `capture-sum-metrics.json`, the `capture-sum-ostel.jsonl` split, and the `capture-main-*` and `capture-sum-*` output names.
+- Done: summary on its own thread, with `capture-sum.sqlite`, `capture-sum-metrics.json`, the `capture-sum-ostel.jsonl` split, and the `capture-main-*` and `capture-sum-*` output names. Buckets are 2 Hz in table `summary`.
+- Done: refactor into `sim`, `dispatcher`, `rec_main`, `rec_sum`, with a new `lib-db` crate owning every SQLite access.
+- Done: 2 Hz `summary` table plus `meta` in `capture-sum.sqlite`, with `SUM_BUCKET_US = 500_000`.
+- Done: `dispatch_stall_count` in main metrics, dispatcher drop counters in summary metrics, and the `simrec-dispatch` and `simrec-rec-main` thread names.
 - Pending: `cargo fmt --all -- --check`, failure-shutdown runtime checks, and the comparison matrix built from the published metrics and CPU samples.
 - Existing version 2 datasets (20-byte ticks) and 5-channel captures must be regenerated.
 

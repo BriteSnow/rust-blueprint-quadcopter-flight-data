@@ -5,7 +5,6 @@ use lib_db::{create_main, db_file_bytes, DbRw, SamplesWriter};
 use simple_fs::SPath;
 
 const DATABASE_FILENAME: &str = "capture-main.sqlite";
-const INSERT_SQL: &str = "INSERT INTO samples (ts_epoch_micro, rotor_fl_rpm, rotor_fr_rpm, rotor_rl_rpm, rotor_rr_rpm, accel_x_mps2, accel_y_mps2, accel_z_mps2, gyro_x_rads, gyro_y_rads, gyro_z_rads) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
 pub struct SqliteRecorder {
 	writer: SamplesWriter,
 	database_path: SPath,

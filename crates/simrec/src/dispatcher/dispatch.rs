@@ -236,7 +236,7 @@ mod tests {
 	fn test_dispatch_dispatch_full_sum_ring_drops() -> Result<()> {
 		// -- Setup & Fixtures
 		let (mut sim_tx, sim_rx) = new_spsc_bounded("sim-dispatch-sum-full", 8)?;
-		let (main_tx, mut main_rx) = new_spsc_bounded("dispatch-rec-main-sum-full", 8)?;
+		let (main_tx, mut main_rx) = new_spsc_bounded::<Arc<Vec<Tick>>>("dispatch-rec-main-sum-full", 8)?;
 		let (sum_tx, mut sum_rx) = new_spsc_bounded("dispatch-rec-sum-full", 1)?;
 		for batch_index in 0..4_i64 {
 			if sim_tx.try_send(vec![tick(batch_index)])?.is_some() {

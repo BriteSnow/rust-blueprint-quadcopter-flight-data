@@ -11,10 +11,9 @@ fn test_cpu_thread_cpu_all_named_thread() -> Result<()> {
 	})?;
 
 	// -- Exec
-	let threads = lib_common::os::thread_cpu_all(std::process::id() as i32)?;
+	let found = wait_for_thread_named(std::process::id() as i32, "lib-os-named")?;
 
 	// -- Check
-	let found = threads.iter().any(|thread| thread.name == "lib-os-named");
 	assert!(found, "named thread should be listed with its name");
 
 	// -- Clean up
@@ -83,6 +82,22 @@ fn test_cpu_process_stats_busy_spin_delta() -> Result<()> {
 }
 
 // region:    --- Test Support
+
+// The spawned thread sets its pthread name from inside its start routine, so the
+// parent can list the thread before its name is visible. Poll until it shows up.
+fn wait_for_thread_named(pid: i32, name: &str) -> Result<bool> {
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+	loop {
+		let threads = lib_common::os::thread_cpu_all(pid)?;
+		if threads.iter().any(|thread| thread.name == name) {
+			return Ok(true);
+		}
+		if std::time::Instant::now() >= deadline {
+			return Ok(false);
+		}
+		std::thread::sleep(std::time::Duration::from_millis(2));
+	}
+}
 
 fn spin_for(duration: std::time::Duration) {
 	let started = std::time::Instant::now();

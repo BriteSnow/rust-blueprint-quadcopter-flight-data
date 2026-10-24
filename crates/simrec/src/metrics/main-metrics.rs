@@ -101,7 +101,6 @@ mod tests {
 			flushes,
 			finish_ms: 2.5,
 			output_bytes: 0,
-			sum: None,
 		};
 
 		// -- Exec
@@ -115,6 +114,8 @@ mod tests {
 			DispatchStats {
 				ticks_total: 400,
 				main_stall_count: 3,
+				sum_batches_dropped: 0,
+				sum_ticks_dropped: 0,
 			},
 			recorded,
 		);

@@ -518,7 +518,7 @@ fn test_run_replay_sum_rows_conserved() -> Result<()> {
 #[test]
 fn test_run_replay_sum_write_failure_keeps_capture() -> Result<()> {
 	// -- Setup & Fixtures
-	let tick_count = 2_000;
+	let tick_count = 20_000;
 	let input = fixture_input("test_run_replay_sum_write_failure_keeps_capture", tick_count)?;
 	let out = fixture_directory("test_run_replay_sum_write_failure_keeps_capture_out")?;
 	let observed = Arc::new(std::sync::Mutex::new(Observed::default()));
@@ -529,7 +529,7 @@ fn test_run_replay_sum_write_failure_keeps_capture() -> Result<()> {
 	let sum_setup = SumSetup {
 		writer: create_sum_writer(&out, FIXTURE_START_US)?,
 		flush_interval: Duration::ZERO,
-		ring_cap: 16,
+		ring_cap: 1,
 	};
 	let sqlite_path = out.join("capture-sum.sqlite");
 	let connection = rusqlite::Connection::open(&sqlite_path)?;
@@ -639,7 +639,7 @@ fn test_run_replay_sum_mid_bucket_rows() -> Result<()> {
 	)?;
 	let stats = outcome.summary.ok_or("expected summary outcome")??;
 	let reader = SumReader::open(out.join("capture-sum.sqlite"))?;
-	let rows = reader.rows_after(start_epoch_us - 1, 100)?;
+	let rows = reader.rows_after(FIXTURE_START_US - 1, 100)?;
 
 	// -- Check
 	assert_eq!(stats.ticks_received, tick_count);

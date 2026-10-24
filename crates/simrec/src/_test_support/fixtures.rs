@@ -46,5 +46,3 @@ pub fn fixture_directory(test_name: &str) -> Result<SPath> {
 	fs::create_dir(&directory)?;
 	Ok(directory)
 }
-
-pub fn fixture_directory_at(test_name: &str) -> Rc<...>

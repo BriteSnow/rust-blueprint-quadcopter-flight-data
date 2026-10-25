@@ -1,8 +1,8 @@
 use super::input::{MockInput, TICK_NS};
-use lib_common::Tick;
 use crate::support::{check_cancelled, idle_wait, wait_until};
 use crate::Result;
 use lib_common::event_base::SyncSpscTx;
+use lib_common::Tick;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 

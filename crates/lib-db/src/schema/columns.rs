@@ -27,8 +27,5 @@ pub(crate) fn insert_sql(table: &str, columns: &[String]) -> String {
 }
 
 fn placeholders(count: usize) -> String {
-	(1..=count)
-		.map(|i| format!("?{i}"))
-		.collect::<Vec<_>>()
-		.join(", ")
+	(1..=count).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ")
 }

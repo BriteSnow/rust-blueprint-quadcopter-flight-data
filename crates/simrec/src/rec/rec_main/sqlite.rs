@@ -43,7 +43,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
-	use lib_common::channels::{CHANNEL_COUNT, CHANNELS};
+	use lib_common::channels::{CHANNELS, CHANNEL_COUNT};
 	use rusqlite::Connection;
 	use std::fs;
 

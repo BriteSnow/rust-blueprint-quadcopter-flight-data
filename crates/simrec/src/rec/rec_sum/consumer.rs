@@ -107,12 +107,7 @@ pub fn consume(
 
 // region:    --- Support
 
-fn commit(
-	writer: &mut SumWriter,
-	rows: &mut Vec<SumRow>,
-	stats: &mut SumStats,
-	full_bucket_ticks: u32,
-) -> Result<()> {
+fn commit(writer: &mut SumWriter, rows: &mut Vec<SumRow>, stats: &mut SumStats, full_bucket_ticks: u32) -> Result<()> {
 	if rows.is_empty() {
 		return Ok(());
 	}
@@ -122,10 +117,7 @@ fn commit(
 	stats.flushes.record(started.elapsed());
 	stats.rows_written += rows.len() as u64;
 	stats.row_ticks_written += rows.iter().map(|row| u64::from(row.tick_count)).sum::<u64>();
-	stats.partial_rows += rows
-		.iter()
-		.filter(|row| row.tick_count < full_bucket_ticks)
-		.count() as u64;
+	stats.partial_rows += rows.iter().filter(|row| row.tick_count < full_bucket_ticks).count() as u64;
 	rows.clear();
 
 	Ok(())

@@ -485,11 +485,15 @@ mod tests {
 
 	impl CpuSource for FakeSource {
 		fn threads(&mut self) -> lib_common::os::Result<Vec<lib_common::os::ThreadCpu>> {
-			self.thread_script.pop_front().unwrap_or(Err(lib_common::os::Error::Unsupported))
+			self.thread_script
+				.pop_front()
+				.unwrap_or(Err(lib_common::os::Error::Unsupported))
 		}
 
 		fn process(&mut self) -> lib_common::os::Result<lib_common::os::ProcessStats> {
-			self.process_script.pop_front().unwrap_or(Err(lib_common::os::Error::Unsupported))
+			self.process_script
+				.pop_front()
+				.unwrap_or(Err(lib_common::os::Error::Unsupported))
 		}
 	}
 

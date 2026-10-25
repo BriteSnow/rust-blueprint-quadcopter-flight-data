@@ -2,9 +2,9 @@
 
 #[path = "flush-histogram.rs"]
 mod flush_histogram;
-mod publish;
 #[path = "main-metrics.rs"]
 mod main_metrics;
+mod publish;
 #[path = "sum-metrics.rs"]
 mod sum_metrics;
 

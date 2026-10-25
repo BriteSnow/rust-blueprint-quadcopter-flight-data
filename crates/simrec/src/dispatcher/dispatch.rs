@@ -95,11 +95,7 @@ fn forward(
 }
 
 /// Best effort: a full ring, or a disconnected ring, drops the whole batch.
-fn forward_sum(
-	sum: &mut Option<SyncSpscTx<Arc<Vec<Tick>>>>,
-	message: Arc<Vec<Tick>>,
-	stats: &mut DispatchStats,
-) {
+fn forward_sum(sum: &mut Option<SyncSpscTx<Arc<Vec<Tick>>>>, message: Arc<Vec<Tick>>, stats: &mut DispatchStats) {
 	let Some(sender) = sum.as_mut() else {
 		return;
 	};

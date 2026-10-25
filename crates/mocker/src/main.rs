@@ -10,7 +10,7 @@ mod writer;
 #[cfg(test)]
 mod _test_support;
 
-pub(crate) use constants::{BYTES_PER_TICK, CHANNEL_COUNT, CHANNELS, RATE_HZ, TICK_NS};
+pub(crate) use constants::{BYTES_PER_TICK, CHANNELS, CHANNEL_COUNT, RATE_HZ, TICK_NS};
 
 // endregion: --- Modules
 

@@ -16,8 +16,7 @@ const META_TABLE: &str = "meta";
 /// Version of the summary schema, written once to `meta.schema_version`.
 const SCHEMA_VERSION: i64 = 1;
 
-static INSERT_SQL: LazyLock<String> =
-	LazyLock::new(|| insert_sql(SUM_TABLE, &summary_column_names()));
+static INSERT_SQL: LazyLock<String> = LazyLock::new(|| insert_sql(SUM_TABLE, &summary_column_names()));
 
 static SELECT_COLUMNS: LazyLock<String> = LazyLock::new(|| summary_column_names().join(", "));
 
@@ -34,9 +33,7 @@ pub struct SumRow {
 
 /// Creates the summary and metadata tables, and writes the metadata rows.
 pub fn create_sum(db: &mut DbRw, bucket_us: i64, start_epoch_us: i64) -> Result<()> {
-	let mut ddl = format!(
-		"CREATE TABLE {SUM_TABLE} (ts_epoch_micro INTEGER PRIMARY KEY, tick_count INTEGER NOT NULL"
-	);
+	let mut ddl = format!("CREATE TABLE {SUM_TABLE} (ts_epoch_micro INTEGER PRIMARY KEY, tick_count INTEGER NOT NULL");
 	for channel in CHANNELS {
 		for suffix in ["min", "max", "avg"] {
 			ddl.push_str(&format!(", {channel}_{suffix} REAL"));
@@ -200,11 +197,11 @@ fn sum_row_from_sql(row: &Row) -> rusqlite::Result<SumRow> {
 
 #[cfg(test)]
 mod tests {
+	use super::super::columns::summary_column_names;
 	use super::{create_sum, SumReader, SumRow, SumWriter, SUM_TABLE};
 	use crate::_test_support::{fixture_dir, table_columns};
 	use crate::conn::DbRw;
 	use lib_common::channels::{CHANNELS, CHANNEL_COUNT};
-	use super::super::columns::summary_column_names;
 
 	const FIXTURE_BUCKET_US: i64 = 500_000;
 	const FIXTURE_START_US: i64 = 1_792_022_400_000_000;
@@ -239,16 +236,14 @@ mod tests {
 
 		// -- Exec
 		create_sum(&mut db, FIXTURE_BUCKET_US, FIXTURE_START_US)?;
-		let start_epoch_us: String = db.conn().query_row(
-			"SELECT value FROM meta WHERE key = 'start_epoch_us'",
-			[],
-			|row| row.get(0),
-		)?;
-		let channels_json: String =
+		let start_epoch_us: String =
 			db.conn()
-				.query_row("SELECT value FROM meta WHERE key = 'channels'", [], |row| {
+				.query_row("SELECT value FROM meta WHERE key = 'start_epoch_us'", [], |row| {
 					row.get(0)
 				})?;
+		let channels_json: String =
+			db.conn()
+				.query_row("SELECT value FROM meta WHERE key = 'channels'", [], |row| row.get(0))?;
 		db.close()?;
 		let reader = SumReader::open(&path)?;
 		let bucket_us = reader.bucket_us()?;
@@ -271,13 +266,12 @@ mod tests {
 
 		writer.write_rows(&[sample_row(1), sample_row(2)])?;
 
-		let sql = format!(
-			"SELECT tick_count, rotor_fl_rpm_min, gyro_z_rads_avg FROM {SUM_TABLE} WHERE ts_epoch_micro = 1"
-		);
-		let (tick_count, min, avg): (i64, f64, f64) =
-			writer.db.conn().query_row(&sql, [], |row| {
-				Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-			})?;
+		let sql =
+			format!("SELECT tick_count, rotor_fl_rpm_min, gyro_z_rads_avg FROM {SUM_TABLE} WHERE ts_epoch_micro = 1");
+		let (tick_count, min, avg): (i64, f64, f64) = writer
+			.db
+			.conn()
+			.query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
 		assert_eq!((tick_count, min, avg), (100, 1.5, 2.0));
 		writer.close()?;
 		Ok(())
@@ -293,11 +287,10 @@ mod tests {
 		let row = sample_row(1);
 		assert!(writer.write_rows(&[row.clone(), row]).is_err());
 
-		let count: i64 = writer.db.conn().query_row(
-			&format!("SELECT count(*) FROM {SUM_TABLE}"),
-			[],
-			|row| row.get(0),
-		)?;
+		let count: i64 = writer
+			.db
+			.conn()
+			.query_row(&format!("SELECT count(*) FROM {SUM_TABLE}"), [], |row| row.get(0))?;
 		assert_eq!(count, 0);
 		Ok(())
 	}
@@ -310,13 +303,7 @@ mod tests {
 		let mut db = DbRw::create_new(&path)?;
 		create_sum(&mut db, FIXTURE_BUCKET_US, FIXTURE_START_US)?;
 		let mut writer = SumWriter::new(db);
-		writer.write_rows(&[
-			sample_row(1),
-			sample_row(2),
-			sample_row(3),
-			sample_row(4),
-			sample_row(5),
-		])?;
+		writer.write_rows(&[sample_row(1), sample_row(2), sample_row(3), sample_row(4), sample_row(5)])?;
 		writer.close()?;
 		let reader = SumReader::open(&path)?;
 

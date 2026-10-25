@@ -4,6 +4,8 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::time::Duration;
 
+// region:    --- DbRw
+
 /// Read-write handle, owned by one thread.
 pub struct DbRw {
 	conn: Connection,
@@ -20,12 +22,9 @@ impl DbRw {
 			OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
 		)?;
 
-		let journal_mode: String =
-			conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+		let journal_mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
 		if !journal_mode.eq_ignore_ascii_case("wal") {
-			return Err(Error::custom(format!(
-				"expected journal_mode wal, got {journal_mode}"
-			)));
+			return Err(Error::custom(format!("expected journal_mode wal, got {journal_mode}")));
 		}
 
 		conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -59,6 +58,10 @@ impl DbRw {
 	}
 }
 
+// endregion: --- DbRw
+
+// region:    --- DbRo
+
 /// Read-only handle, owned by one thread.
 pub struct DbRo {
 	conn: Connection,
@@ -67,10 +70,8 @@ pub struct DbRo {
 impl DbRo {
 	/// Opens an existing database read-only.
 	pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-		let conn = Connection::open_with_flags(
-			path,
-			OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-		)?;
+		let conn =
+			Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
 		conn.pragma_update(None, "query_only", "ON")?;
 		conn.busy_timeout(Duration::from_millis(1000))?;
 		Ok(Self { conn })
@@ -82,6 +83,8 @@ impl DbRo {
 		&self.conn
 	}
 }
+
+// endregion: --- DbRo
 
 // region:    --- Tests
 
@@ -106,12 +109,8 @@ mod tests {
 		let dir = fixture_dir("test_conn_db_rw_create_new_pragmas")?;
 		let db = DbRw::create_new(dir.join("capture-main.sqlite"))?;
 
-		let journal_mode: String = db
-			.conn()
-			.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
-		let synchronous: i64 = db
-			.conn()
-			.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+		let journal_mode: String = db.conn().query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+		let synchronous: i64 = db.conn().query_row("PRAGMA synchronous", [], |row| row.get(0))?;
 
 		assert_eq!(journal_mode, "wal");
 		assert_eq!(synchronous, 1);
@@ -128,9 +127,7 @@ mod tests {
 		db.close()?;
 
 		let ro = DbRo::open(&path)?;
-		let query_only: i64 = ro
-			.conn()
-			.query_row("PRAGMA query_only", [], |row| row.get(0))?;
+		let query_only: i64 = ro.conn().query_row("PRAGMA query_only", [], |row| row.get(0))?;
 		assert_eq!(query_only, 1);
 		assert!(ro.conn().execute("INSERT INTO t (a) VALUES (1)", []).is_err());
 		Ok(())

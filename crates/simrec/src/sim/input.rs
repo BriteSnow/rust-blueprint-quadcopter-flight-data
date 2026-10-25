@@ -1,6 +1,6 @@
+use crate::{Error, Result};
 use lib_common::channels::CHANNEL_COUNT;
 use lib_common::Tick;
-use crate::{Error, Result};
 use serde::Deserialize;
 use simple_fs::SPath;
 use std::fs::File;
@@ -259,13 +259,9 @@ mod tests {
 		let wrong_tick_size = validate_manifest(&manifest, 2 * BYTES_PER_TICK);
 
 		// -- Check
-		let error = wrong_channels
-			.err()
-			.ok_or("expected old channel list rejection")?;
+		let error = wrong_channels.err().ok_or("expected old channel list rejection")?;
 		assert!(error.to_string().contains("channel order"));
-		let error = wrong_tick_size
-			.err()
-			.ok_or("expected old tick size rejection")?;
+		let error = wrong_tick_size.err().ok_or("expected old tick size rejection")?;
 		assert!(error.to_string().contains("40-byte ticks"));
 		Ok(())
 	}
@@ -320,8 +316,7 @@ mod tests {
 	fn test_mock_in_open_rejects_version_2() -> Result<()> {
 		// -- Setup & Fixtures
 		let directory = fixture_directory("test_mock_in_open_rejects_version_2")?;
-		let mut manifest: serde_json::Value =
-			serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
+		let mut manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
 		manifest["version"] = serde_json::json!(2);
 		std::fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
 

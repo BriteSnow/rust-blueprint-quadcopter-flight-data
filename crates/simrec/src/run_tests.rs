@@ -736,10 +736,7 @@ impl Recorder for ObservingRecorder {
 		for tick in ticks {
 			let index = observed.ticks;
 			if tick.epoch_micro != FIXTURE_START_US + index as i64 * sim::TICK_PERIOD_US
-				|| tick.v
-					!= std::array::from_fn(|channel| {
-						(index * CHANNEL_COUNT as u64 + channel as u64) as f32
-					})
+				|| tick.v != std::array::from_fn(|channel| (index * CHANNEL_COUNT as u64 + channel as u64) as f32)
 			{
 				return Err(Error::custom("recorded tick order or values changed"));
 			}
@@ -771,5 +768,3 @@ impl CpuSource for FailingSource {
 		Err(lib_common::os::Error::Unsupported)
 	}
 }
-
-

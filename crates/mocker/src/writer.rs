@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::story::Story;
 use crate::synth::Synth;
-use crate::{BYTES_PER_TICK, CHANNEL_COUNT, CHANNELS, RATE_HZ};
+use crate::{BYTES_PER_TICK, CHANNELS, CHANNEL_COUNT, RATE_HZ};
 use serde::Serialize;
 use simple_fs::SPath;
 use std::fs::{self, File, OpenOptions};

@@ -1,9 +1,9 @@
 // region:    --- Modules
 
+pub mod channels;
 pub mod event_base;
 pub mod os;
 pub mod time;
-pub mod channels;
 mod types;
 
 pub use types::Tick;

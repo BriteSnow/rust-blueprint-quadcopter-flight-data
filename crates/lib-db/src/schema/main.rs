@@ -18,9 +18,7 @@ pub fn create_main(db: &DbRw, all_index: bool) -> Result<()> {
 	ddl.push_str(");");
 	if all_index {
 		for channel in CHANNELS {
-			ddl.push_str(&format!(
-				"CREATE INDEX idx_samples_{channel} ON samples ({channel});"
-			));
+			ddl.push_str(&format!("CREATE INDEX idx_samples_{channel} ON samples ({channel});"));
 		}
 	}
 	db.conn().execute_batch(&ddl)?;
@@ -136,10 +134,7 @@ mod tests {
 		])?;
 
 		assert_eq!(count_rows(&writer)?, 2);
-		let sql = format!(
-			"SELECT {} FROM samples WHERE ts_epoch_micro = 2",
-			CHANNELS[0]
-		);
+		let sql = format!("SELECT {} FROM samples WHERE ts_epoch_micro = 2", CHANNELS[0]);
 		let value: f64 = writer.db.conn().query_row(&sql, [], |row| row.get(0))?;
 		assert_eq!(value, 1.5);
 		writer.close()?;

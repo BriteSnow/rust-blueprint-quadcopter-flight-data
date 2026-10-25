@@ -5,10 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Creates a unique fixture directory under `tests-data/.tmp/<test_name>/<nanos>`.
 pub fn fixture_dir(test_name: &str) -> Result<PathBuf> {
-	let nanos = SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.map(|d| d.as_nanos())
-		.unwrap_or(0);
+	let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
 	let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 		.join("tests-data/.tmp")
 		.join(test_name)

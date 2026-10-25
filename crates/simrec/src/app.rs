@@ -1,8 +1,8 @@
 use crate::cli::{dataset_candidates, duration_name, duration_tick_count, CliCmd};
+use crate::dispatcher::DispatchStats;
 use crate::metrics::{Metrics, SumMetrics};
 use crate::ostel::{OsCpuSource, SamplerSetup, MAIN_OSTEL_FILE_NAME, SUM_OSTEL_FILE_NAME};
 use crate::rec::rec_main::{self, NoopRecorder, RawRecorder, Recorder, SqliteRecorder};
-use crate::dispatcher::DispatchStats;
 use crate::rec::rec_sum::{create_sum_writer, SumStats};
 use crate::run::{run_replay, ReplayOptions, ReplayOutcome, SumSetup, REC_SUM_THREAD_NAME};
 use crate::sim::{MockInput, ReplaySpeed};
@@ -212,7 +212,9 @@ fn run_capture(config: CaptureConfig) -> Result<CaptureReport> {
 					eprintln!("simrec: summary metrics not published: {error}");
 				}
 			}
-			Err(error) => eprintln!("simrec: summary conservation failed, capture-sum-metrics.json not published: {error}"),
+			Err(error) => {
+				eprintln!("simrec: summary conservation failed, capture-sum-metrics.json not published: {error}")
+			}
 		},
 		(_, Some(Err(error))) => {
 			eprintln!("simrec: summary failed, capture-sum-metrics.json not published: {error}")
@@ -258,11 +260,7 @@ fn resolve_dataset(mock_root: &SPath, duration: &str) -> Result<(String, SPath)>
 	)))
 }
 
-pub(crate) fn check_sum_conservation(
-	stats: &SumStats,
-	dispatched: &DispatchStats,
-	ticks_total: u64,
-) -> Result<()> {
+pub(crate) fn check_sum_conservation(stats: &SumStats, dispatched: &DispatchStats, ticks_total: u64) -> Result<()> {
 	if stats.ticks_received + dispatched.sum_ticks_dropped != ticks_total {
 		return Err(Error::custom(format!(
 			"summary tick conservation failed: expected {ticks_total}, received {}, dropped {}",
@@ -284,7 +282,6 @@ fn speed_suffix(speed: &ReplaySpeed) -> &'static str {
 		ReplaySpeed::Max => "max",
 	}
 }
-
 
 // endregion: --- Support
 

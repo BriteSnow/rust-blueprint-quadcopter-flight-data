@@ -53,9 +53,11 @@ pub(crate) fn run_replay(
 	let (main_producer, consumer) = new_spsc_bounded("dispatch-rec-main", ring_cap)?;
 	let (sum_producer, sum_channel) = match sum_setup {
 		Some(setup) => {
-			let (sum_producer, sum_consumer) =
-				new_spsc_bounded::<Arc<Vec<Tick>>>("dispatch-rec-sum", setup.ring_cap)?;
-			(Some(sum_producer), Some((sum_consumer, setup.writer, setup.flush_interval)))
+			let (sum_producer, sum_consumer) = new_spsc_bounded::<Arc<Vec<Tick>>>("dispatch-rec-sum", setup.ring_cap)?;
+			(
+				Some(sum_producer),
+				Some((sum_consumer, setup.writer, setup.flush_interval)),
+			)
 		}
 		None => (None, None),
 	};
@@ -67,66 +69,74 @@ pub(crate) fn run_replay(
 	thread::scope(|scope| -> Result<_> {
 		let producer_cancelled = Arc::clone(&cancelled);
 		let producer_finished = Arc::clone(&sim_done);
-		let producer_handle = thread::Builder::new().name(SIM_THREAD_NAME.into()).spawn_scoped(scope, move || {
-			let mut guard = StopGuard::new(Arc::clone(&producer_cancelled));
-			let result = sim::produce(input, producer, speed, &producer_cancelled);
-			if result.is_ok() {
-				producer_finished.store(true, Ordering::Release);
-				guard.disarm();
-			}
-			result
-		})?;
+		let producer_handle = thread::Builder::new()
+			.name(SIM_THREAD_NAME.into())
+			.spawn_scoped(scope, move || {
+				let mut guard = StopGuard::new(Arc::clone(&producer_cancelled));
+				let result = sim::produce(input, producer, speed, &producer_cancelled);
+				if result.is_ok() {
+					producer_finished.store(true, Ordering::Release);
+					guard.disarm();
+				}
+				result
+			})?;
 
 		let dispatch_cancelled = Arc::clone(&cancelled);
 		let dispatch_sim_done = Arc::clone(&sim_done);
 		let dispatch_finished = Arc::clone(&dispatch_done);
-		let dispatch_handle = match thread::Builder::new().name(DISPATCH_THREAD_NAME.into()).spawn_scoped(scope, move || {
-			let mut guard = StopGuard::new(Arc::clone(&dispatch_cancelled));
-			let result = dispatch(
-				dispatch_input,
-				main_producer,
-				sum_producer,
-				&dispatch_sim_done,
-				&dispatch_finished,
-				&dispatch_cancelled,
-			);
-			if result.is_ok() {
-				guard.disarm();
-			}
-			result
-		}) {
-			Ok(handle) => handle,
-			Err(error) => {
-				cancelled.store(true, Ordering::Release);
-				let _ = producer_handle.join();
-				return Err(error.into());
-			}
-		};
+		let dispatch_handle =
+			match thread::Builder::new()
+				.name(DISPATCH_THREAD_NAME.into())
+				.spawn_scoped(scope, move || {
+					let mut guard = StopGuard::new(Arc::clone(&dispatch_cancelled));
+					let result = dispatch(
+						dispatch_input,
+						main_producer,
+						sum_producer,
+						&dispatch_sim_done,
+						&dispatch_finished,
+						&dispatch_cancelled,
+					);
+					if result.is_ok() {
+						guard.disarm();
+					}
+					result
+				}) {
+				Ok(handle) => handle,
+				Err(error) => {
+					cancelled.store(true, Ordering::Release);
+					let _ = producer_handle.join();
+					return Err(error.into());
+				}
+			};
 
 		let consumer_cancelled = Arc::clone(&cancelled);
 		let consumer_finished = Arc::clone(&dispatch_done);
-		let consumer_handle = match thread::Builder::new().name(REC_MAIN_THREAD_NAME.into()).spawn_scoped(scope, move || {
-			let mut guard = StopGuard::new(Arc::clone(&consumer_cancelled));
-			let result = rec_main::consume(
-				consumer,
-				recorder,
-				flush_interval,
-				max_batch,
-				&consumer_finished,
-				&consumer_cancelled,
-			);
-			if result.is_ok() {
-				guard.disarm();
-			}
-			result
-		}) {
-			Ok(handle) => handle,
-			Err(error) => {
-				cancelled.store(true, Ordering::Release);
-				let _ = producer_handle.join();
-				return Err(error.into());
-			}
-		};
+		let consumer_handle =
+			match thread::Builder::new()
+				.name(REC_MAIN_THREAD_NAME.into())
+				.spawn_scoped(scope, move || {
+					let mut guard = StopGuard::new(Arc::clone(&consumer_cancelled));
+					let result = rec_main::consume(
+						consumer,
+						recorder,
+						flush_interval,
+						max_batch,
+						&consumer_finished,
+						&consumer_cancelled,
+					);
+					if result.is_ok() {
+						guard.disarm();
+					}
+					result
+				}) {
+				Ok(handle) => handle,
+				Err(error) => {
+					cancelled.store(true, Ordering::Release);
+					let _ = producer_handle.join();
+					return Err(error.into());
+				}
+			};
 
 		let summary_handle = sum_channel.map(|(sum_consumer, writer, sum_flush)| {
 			thread::Builder::new()

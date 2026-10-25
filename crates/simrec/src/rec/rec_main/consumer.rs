@@ -4,8 +4,8 @@ use crate::support::{check_cancelled, idle_wait};
 use crate::Result;
 use lib_common::event_base::SyncSpscRx;
 use lib_common::Tick;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
@@ -47,28 +47,14 @@ pub fn consume(
 		};
 		match message {
 			Some(message) => {
-				consume_message(
-					message,
-					&mut *recorder,
-					&mut batch,
-					&mut stats,
-					policy,
-					&mut last_flush,
-				)?;
+				consume_message(message, &mut *recorder, &mut batch, &mut stats, policy, &mut last_flush)?;
 			}
 			None => {
 				if dispatch_done.load(Ordering::Acquire) {
 					// Recheck after acquiring completion so the final push cannot be missed.
 					match consumer.try_recv() {
 						Ok(Some(message)) => {
-							consume_message(
-								message,
-								&mut *recorder,
-								&mut batch,
-								&mut stats,
-									policy,
-								&mut last_flush,
-							)?;
+							consume_message(message, &mut *recorder, &mut batch, &mut stats, policy, &mut last_flush)?;
 							continue;
 						}
 						Ok(None) => break,

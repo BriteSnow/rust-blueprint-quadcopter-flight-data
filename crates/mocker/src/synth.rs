@@ -45,19 +45,10 @@ impl Synth {
 	pub fn begin_segment(&mut self, segment: &Segment) {
 		self.ramp_from = self.last_effect;
 		let gust = if matches!(segment.maneuver, Maneuver::Gust) {
-			let accel = [
-				self.rng.gen_range(-3.0_f32..=3.0),
-				self.rng.gen_range(-3.0_f32..=3.0),
-			];
-			let attitude = [
-				self.rng.gen_range(-0.1_f32..=0.1),
-				self.rng.gen_range(-0.1_f32..=0.1),
-			];
+			let accel = [self.rng.gen_range(-3.0_f32..=3.0), self.rng.gen_range(-3.0_f32..=3.0)];
+			let attitude = [self.rng.gen_range(-0.1_f32..=0.1), self.rng.gen_range(-0.1_f32..=0.1)];
 			let yaw_rate = self.rng.gen_range(-0.5_f32..=0.5);
-			let gyro_burst = [
-				self.rng.gen_range(-1.5_f32..=1.5),
-				self.rng.gen_range(-1.5_f32..=1.5),
-			];
+			let gyro_burst = [self.rng.gen_range(-1.5_f32..=1.5), self.rng.gen_range(-1.5_f32..=1.5)];
 			GustParams {
 				accel,
 				attitude,
@@ -185,7 +176,10 @@ mod tests {
 		// -- Check
 		for axis in 0..3 {
 			let mean = ticks.iter().map(|values| values[7 + axis]).sum::<f32>() / count;
-			assert!(mean.abs() <= 0.01, "gyro axis {axis} mean must stay near zero, got {mean}");
+			assert!(
+				mean.abs() <= 0.01,
+				"gyro axis {axis} mean must stay near zero, got {mean}"
+			);
 		}
 		let mean_accel_z = ticks.iter().map(|values| values[6]).sum::<f32>() / count;
 		assert!(
@@ -194,7 +188,10 @@ mod tests {
 		);
 		for index in [4, 5] {
 			let mean = ticks.iter().map(|values| values[index]).sum::<f32>() / count;
-			assert!(mean.abs() <= 0.02, "accel index {index} mean must stay near zero, got {mean}");
+			assert!(
+				mean.abs() <= 0.02,
+				"accel index {index} mean must stay near zero, got {mean}"
+			);
 		}
 		Ok(())
 	}
@@ -235,11 +232,7 @@ mod tests {
 		let bank = ticks.get(1).ok_or("bank_right segment should produce ticks")?;
 		let level = ticks.get(2).ok_or("hover segment should produce ticks")?;
 		let entry_mean = mean(&bank[..200], 7);
-		let recovered: f32 = bank
-			.iter()
-			.chain(level.iter())
-			.map(|values| values[7] / RATE_HZ as f32)
-			.sum();
+		let recovered: f32 = bank.iter().chain(level.iter()).map(|values| values[7] / RATE_HZ as f32).sum();
 
 		// -- Check
 		assert!(

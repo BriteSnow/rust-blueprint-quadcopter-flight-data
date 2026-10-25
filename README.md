@@ -181,7 +181,7 @@ Options:
 One compact JSON object per line, with a `kind` discriminator. All lines for one sample share the same `seq` and `ts_epoch_us`.
 
 ```json
-{"kind":"thread","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"thread":"simrec-rec","user_ns":812000000,"system_ns":95000000,"cpu_pct":41.7,"sched_usage":40.3}
+{"kind":"thread","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"thread":"simrec-rec-main","user_ns":812000000,"system_ns":95000000,"cpu_pct":41.7,"sched_usage":40.3}
 {"kind":"process","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"user_ns":1020000000,"system_ns":140000000,"cpu_pct":48.2,"rss_bytes":38211584}
 {"kind":"error","seq":4,"ts_epoch_us":1792022404000000,"message":"proc_pidinfo failed: ..."}
 ```
@@ -194,7 +194,7 @@ One compact JSON object per line, with a `kind` discriminator. All lines for one
 
 - Group by `thread` and plot `cpu_pct` against `ts_epoch_us`.
 
-- `capture-sum-ostel.jsonl` has the same schema and holds only the `simrec-sum` thread lines. Process lines stay in `capture-main-ostel.jsonl`, and both files share `seq` and `ts_epoch_us`.
+- `capture-sum-ostel.jsonl` has the same schema and holds only the `simrec-rec-sum` thread lines. Process lines stay in `capture-main-ostel.jsonl`, and both files share `seq` and `ts_epoch_us`.
 
 ## Summary Database
 

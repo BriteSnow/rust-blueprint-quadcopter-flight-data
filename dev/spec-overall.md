@@ -502,7 +502,7 @@ This is a plausible, simplified model, not a physics simulation. Existing rotor 
 - Final draining happens only after the dispatcher publishes success on `dispatch_done` and the ring is rechecked.
 - Every worker is joined before completion is reported.
 - Threads are named `simrec-sim` (producer), `simrec-dispatch` (fan-out), `simrec-rec-main` (main recorder), `simrec-rec-sum` (summary writer, unless `--no-sum`), and `simrec-sampler` (CPU sampler, when enabled).
-- Tick conservation is required: produced and recorded counts must equal the replayed tick count, which is the requested span in ticks.
+- Tick conservation is required: produced, dispatched, and recorded counts must equal the replayed tick count, which is the requested span in ticks.
 
 ### Recorder Trait
 
@@ -595,7 +595,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 - Threads are keyed by handle and label, so a reused handle does not inherit an old delta.
 - A sampler error never fails the capture. The sampler writes one `error` line, prints one warning to stderr, and stops.
 - If the sampler thread cannot start, the capture continues without sampling.
-- Output is `<out>/captured/<name>-<speed>/<backend>/capture-main-ostel.jsonl`, created with `create-new` before the replay starts, so a creation failure is a setup error. The `simrec-sum` thread lines go to `capture-sum-ostel.jsonl` in the same way, unless `--no-sum`.
+- Output is `<out>/captured/<name>-<speed>/<backend>/capture-main-ostel.jsonl`, created with `create-new` before the replay starts, so a creation failure is a setup error. The `simrec-rec-sum` thread lines go to `capture-sum-ostel.jsonl` in the same way, unless `--no-sum`.
 - Both files are written for every backend, including `noop`, and are not covered by the metrics completion markers.
 - Activity after the last sample (up to one interval) is not captured.
 
@@ -604,7 +604,7 @@ Pretty-printed JSON with a trailing newline. The schema is the same for every ba
 One compact JSON object per line, with a `kind` discriminator. All lines for one sample share the same `seq` and `ts_epoch_us`.
 
 ```json
-{"kind":"thread","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"thread":"simrec-rec","user_ns":812000000,"system_ns":95000000,"cpu_pct":41.7,"sched_usage":40.3}
+{"kind":"thread","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"thread":"simrec-rec-main","user_ns":812000000,"system_ns":95000000,"cpu_pct":41.7,"sched_usage":40.3}
 {"kind":"process","seq":3,"ts_epoch_us":1792022403000000,"interval_us":1000412,"user_ns":1020000000,"system_ns":140000000,"cpu_pct":48.2,"rss_bytes":38211584}
 {"kind":"error","seq":4,"ts_epoch_us":1792022404000000,"message":"proc_pidinfo failed: ..."}
 ```
@@ -760,7 +760,8 @@ CREATE TABLE summary (
 - Done: refactor into `sim`, `dispatcher`, `rec_main`, `rec_sum`, with a new `lib-db` crate owning every SQLite access.
 - Done: 2 Hz `summary` table plus `meta` in `capture-sum.sqlite`, with `SUM_BUCKET_US = 500_000`.
 - Done: `dispatch_stall_count` in main metrics, dispatcher drop counters in summary metrics, and the `simrec-dispatch` and `simrec-rec-main` thread names.
-- Pending: `cargo fmt --all -- --check`, failure-shutdown runtime checks, and the comparison matrix built from the published metrics and CPU samples.
+- Done: `cargo build --workspace` and `cargo test --workspace` green, including the failure-shutdown replay tests (`test_run_replay_workers_*_shutdown`).
+- Pending: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and the comparison matrix built from the published metrics and CPU samples.
 - Existing version 2 datasets (20-byte ticks) and 5-channel captures must be regenerated.
 
 ## Known Limits

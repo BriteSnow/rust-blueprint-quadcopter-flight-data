@@ -37,7 +37,7 @@ python3 -m http.server 8000
 | `sandbox/mock-data/<name>/manifest.json` | expected tick count, input size, rate, seed |
 | `sandbox/captured/<name>-<speed>/<backend>/capture-main-ostel.jsonl` | per-thread and process CPU samples, read line by line, partial lines skipped, falls back to `cpu-samples.jsonl` |
 | `sandbox/captured/<name>-<speed>/<backend>/capture-sum-metrics.json` | summary metrics, schema in `dev/spec-overall.md` |
-| `sandbox/captured/<name>-<speed>/<backend>/capture-sum-ostel.jsonl` | `simrec-sum` thread CPU samples, read line by line, partial lines skipped |
+| `sandbox/captured/<name>-<speed>/<backend>/capture-sum-ostel.jsonl` | `simrec-rec-sum` thread CPU samples, read line by line, partial lines skipped |
 
 - A backend folder without `capture-main-metrics.json` is shown as incomplete. This covers runs that failed, were interrupted, or are still running.
 - A summary without `capture-sum-metrics.json` is shown as incomplete, and its cost is still shown from `capture-sum-ostel.jsonl` when that file exists.
@@ -84,7 +84,7 @@ Backends in each run folder are found the same way:
 - `speedup = ticks_total * 0.005 / wall_time_s`, the replayed sensor time divided by wall time. Shown as `n/a` when wall time is zero.
 - `bytes_per_tick = output_bytes / ticks_total`. Shown as `n/a` when no ticks were recorded.
 - Input size: `tick_count * bytes_per_tick` from the manifest.
-- CPU averages are the mean of the non-null `cpu_pct` values in `cpu-samples.jsonl`, and CPU peaks are the maximum. The first sample of each thread is null and is excluded.
+- CPU averages are the mean of the non-null `cpu_pct` values in the ostel file (`capture-main-ostel.jsonl`, falling back to `cpu-samples.jsonl`), and CPU peaks are the maximum. The first sample of each thread is null and is excluded.
 - The report reads `simrec-rec-main` and `simrec-rec-sum` first, then falls back to the legacy `simrec-rec` and `simrec-sum`, so a capture never mixes both thread names.
 - The best value is the minimum or the maximum, depending on the metric. At least two recording backends must have a value. `noop` is excluded because it writes no recording.
 - `noop` is also left out of the output size and bytes per tick charts.

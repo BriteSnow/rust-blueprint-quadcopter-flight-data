@@ -107,10 +107,7 @@ mod test_cases {
 		let metrics = report.out.join("capture-main-metrics.json");
 		assert!(fs::metadata(&metrics).is_ok_and(|metadata| metadata.is_file()));
 		for name in ["capture-sum.sqlite", "capture-sum-metrics.json", "capture-sum-ostel.jsonl"] {
-			assert!(
-				fs::metadata(&report.out.join(name)).is_err(),
-				"{name} must not exist"
-			);
+			assert!(fs::metadata(report.out.join(name)).is_err(), "{name} must not exist");
 		}
 		Ok(())
 	}

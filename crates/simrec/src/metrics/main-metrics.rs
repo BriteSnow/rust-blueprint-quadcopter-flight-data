@@ -33,6 +33,7 @@ pub struct Metrics {
 }
 
 impl Metrics {
+	#[allow(clippy::too_many_arguments)]
 	pub fn from_run(
 		backend: &'static str,
 		speed: String,
@@ -223,7 +224,7 @@ mod tests {
 			1,
 			Duration::from_secs(1),
 			ProducerStats::default(),
-		DispatchStats::default(),
+			DispatchStats::default(),
 			ConsumerStats::default(),
 		)
 	}
